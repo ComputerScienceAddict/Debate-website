@@ -3,15 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true}); console.log('Removed .next')\"",
+    "clean": "node -e \"const fs=require('fs');['.next','node_modules/.cache'].forEach(p=>{try{fs.rmSync(p,{recursive:true,force:true});}catch(e){}}); console.log('Removed .next and node_modules/.cache')\"",
     "welcome:mark": "node scripts/prepare-welcome-mark.mjs",
-    "dev": "next dev",
-    "dev:clean": "npm run clean && next dev",
+    "dev": "next dev --turbo",
+    "dev:webpack": "next dev",
+    "dev:clean": "npm run clean && next dev --turbo",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "check": "npm run lint && npm run build",
+    "rebuild": "npm run clean && npm run build"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.10.2",
+    "@supabase/supabase-js": "^2.104.1",
     "next": "^15.3.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

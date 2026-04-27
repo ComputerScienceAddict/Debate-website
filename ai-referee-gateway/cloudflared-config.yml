@@ -1,0 +1,17 @@
+# Cloudflare Tunnel configuration
+# Replace YOUR_TUNNEL_ID with your actual tunnel ID after running:
+#   cloudflared tunnel create debate-ai
+#
+# On Windows, the credentials file is typically at:
+#   %USERPROFILE%\.cloudflared\YOUR_TUNNEL_ID.json
+#
+# On macOS/Linux:
+#   ~/.cloudflared/YOUR_TUNNEL_ID.json
+
+tunnel: debate-ai
+credentials-file: ~/.cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: ai.yourdomain.com
+    service: http://localhost:3001
+  - service: http_status:404

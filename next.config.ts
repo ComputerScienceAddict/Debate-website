@@ -7,10 +7,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig: NextConfig = {
   // Avoid picking a parent folder when another package-lock.json exists on the machine.
   outputFileTracingRoot: path.join(__dirname),
-  // Workaround: Next 15 dev can throw "SegmentViewNode ... not in the React Client Manifest"
-  // and corrupt .next chunk refs after many HMR cycles. Disabling avoids the buggy devtools path.
-  experimental: {
-    devtoolSegmentExplorer: false,
+  // Mitigate dev-only Webpack HMR chunk corruption:
+  // "__webpack_modules__[moduleId] is not a function" after many fast refreshes / mixed .next states.
+  // Turbopack (`next dev --turbo`, see package.json) avoids this path entirely.
+  webpack: (config, { dev }) => {
+    if (dev) {
+      config.cache = false;
+    }
+    return config;
   },
 };
 

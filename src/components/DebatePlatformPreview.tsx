@@ -1,7 +1,21 @@
 "use client";
 
 import Image from "next/image";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import type { RealtimeChannel } from "@supabase/supabase-js";
+import type { LiveCheckResponse, FinalScoreResponse, RefereeEvent } from "@/lib/referee/types";
+import { createClient as createSupabaseClient } from "@/lib/supabase/client";
+import {
+  createDebatePeerConnection,
+  attachLocalMedia,
+  stopMediaStream,
+} from "@/lib/webrtc/peer";
+import {
+  sendSignal,
+  subscribeSignals,
+  unsubscribeSignals,
+  upsertPresence,
+} from "@/lib/webrtc/signaling";
 
 type LogoMarkProps = { spinning?: boolean; size?: "nav" | "large" };
 
@@ -197,39 +211,14 @@ function BrandButton({
   );
 }
 
-const landingLiveChannels: { title: string; spectating: string }[] = [
-  { title: "Politics: Midterms", spectating: "12.4k watching" },
-  { title: "AI Ethics 1v1", spectating: "8.1k watching" },
-  { title: "Space Exploration", spectating: "5.3k watching" },
-];
-
-const landingTopicPills = ["Tech", "Climate", "Philosophy", "Gaming", "Policy", "Ethics"];
-
-const landingLiveGrid: {
+type LiveRoomCard = {
+  id: string;
   title: string;
+  topic: string;
   referee: string;
-  tags: [string, string];
-  viewers: string;
-}[] = [
-  {
-    title: "Copyright in the Generative Era",
-    referee: "Referee #902",
-    tags: ["Law", "Tech"],
-    viewers: "1.4k viewers",
-  },
-  {
-    title: "Nuclear Power: The Path to Net Zero?",
-    referee: "Physics Mod Alpha",
-    tags: ["Climate", "Energy"],
-    viewers: "842 viewers",
-  },
-  {
-    title: "Social Media Bans for Minors",
-    referee: "Social Arbiter",
-    tags: ["Society", "Youth"],
-    viewers: "3.1k viewers",
-  },
-];
+  viewers: number;
+  tags: string[];
+};
 
 function PlaceholderPlayGlyph() {
   return (
@@ -245,10 +234,42 @@ function LandingHomeView({
   transitioning,
 }: {
   onLogo: () => void;
-  onGoLive: () => void;
+  onGoLive: (room?: LiveRoomCard) => void;
   transitioning: boolean;
 }) {
   const disabled = transitioning;
+  const [liveRooms, setLiveRooms] = useState<LiveRoomCard[]>([]);
+  const [loadingRooms, setLoadingRooms] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLiveRooms() {
+      try {
+        const response = await fetch("/api/rooms/live", { cache: "no-store" });
+        if (!response.ok) throw new Error("Failed to load rooms");
+        const data = await response.json();
+        if (!cancelled) setLiveRooms(Array.isArray(data.rooms) ? data.rooms : []);
+      } catch {
+        if (!cancelled) setLiveRooms([]);
+      } finally {
+        if (!cancelled) setLoadingRooms(false);
+      }
+    }
+
+    loadLiveRooms();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const liveChannels = liveRooms.slice(0, 6).map((room) => ({
+    id: room.id,
+    title: room.title,
+    spectating: `${room.viewers} watching`,
+  }));
+
+  const topicPills = Array.from(new Set(liveRooms.map((room) => room.topic))).slice(0, 8);
 
   return (
     <div className="min-h-screen bg-gray-100 text-gray-900 antialiased">
@@ -257,7 +278,7 @@ function LandingHomeView({
           <LogoButton onClick={onLogo} spinning={transitioning} variant="landing" />
 
           <div className="flex shrink-0 items-center gap-3 sm:gap-6">
-            <StartSessionButton onClick={onGoLive} transitioning={transitioning} />
+            <StartSessionButton onClick={() => onGoLive()} transitioning={transitioning} />
             <div
               className="hidden h-9 w-9 shrink-0 rounded-full border border-gray-300 bg-gray-200 sm:block"
               aria-hidden
@@ -272,24 +293,34 @@ function LandingHomeView({
             Live channels
           </p>
           <nav aria-label="Live channels" className="flex flex-col">
-            {landingLiveChannels.map((ch) => (
-              <button
-                key={ch.title}
-                type="button"
-                className="group flex w-full items-center gap-0 text-left transition-colors hover:bg-gray-50 max-lg:justify-center max-lg:py-3 lg:min-h-[4.25rem] lg:border-b lg:border-gray-100 lg:last:border-b-0"
-              >
-                <span
-                  className="hidden h-2 w-2 shrink-0 rounded-full bg-red-500 max-lg:block"
-                  aria-hidden
-                />
-                <div className="sidebar-text flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-4 py-3 max-lg:hidden">
-                  <span className="text-sm font-semibold leading-snug text-gray-900 group-hover:text-gray-950">
-                    {ch.title}
-                  </span>
-                  <span className="text-xs text-gray-500">{ch.spectating}</span>
-                </div>
-              </button>
-            ))}
+            {loadingRooms ? (
+              <p className="px-4 py-3 text-xs text-gray-400">Loading live channels...</p>
+            ) : liveChannels.length === 0 ? (
+              <p className="px-4 py-3 text-xs text-gray-400">No live channels yet.</p>
+            ) : (
+              liveChannels.map((ch) => (
+                <button
+                  key={ch.id}
+                  type="button"
+                  onClick={() => {
+                    const room = liveRooms.find((r) => r.id === ch.id);
+                    onGoLive(room);
+                  }}
+                  className="group flex w-full items-center gap-0 text-left transition-colors hover:bg-gray-50 max-lg:justify-center max-lg:py-3 lg:min-h-[4.25rem] lg:border-b lg:border-gray-100 lg:last:border-b-0"
+                >
+                  <span
+                    className="hidden h-2 w-2 shrink-0 rounded-full bg-red-500 max-lg:block"
+                    aria-hidden
+                  />
+                  <div className="sidebar-text flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-4 py-3 max-lg:hidden">
+                    <span className="text-sm font-semibold leading-snug text-gray-900 group-hover:text-gray-950">
+                      {ch.title}
+                    </span>
+                    <span className="text-xs text-gray-500">{ch.spectating}</span>
+                  </div>
+                </button>
+              ))
+            )}
           </nav>
         </div>
 
@@ -298,14 +329,18 @@ function LandingHomeView({
             Topics
           </p>
           <div className="flex flex-wrap gap-2 px-4">
-            {landingTopicPills.map((topic) => (
-              <span
-                key={topic}
-                className="rounded-lg bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-600"
-              >
-                {topic}
-              </span>
-            ))}
+            {topicPills.length === 0 ? (
+              <span className="text-xs text-gray-400">Topics appear when live rooms are available.</span>
+            ) : (
+              topicPills.map((topic) => (
+                <span
+                  key={topic}
+                  className="rounded-lg bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-600"
+                >
+                  {topic}
+                </span>
+              ))
+            )}
           </div>
         </div>
       </aside>
@@ -359,51 +394,61 @@ function LandingHomeView({
           </div>
 
           <div className="grid grid-cols-1 gap-8 md:grid-cols-2 xl:grid-cols-3">
-            {landingLiveGrid.map((card) => (
-              <div
-                key={card.title}
-                role="button"
-                tabIndex={0}
-                onClick={disabled ? undefined : onGoLive}
-                onKeyDown={
-                  disabled
-                    ? undefined
-                    : (e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onGoLive();
-                        }
-                      }
-                }
-                className={`overflow-hidden rounded-2xl border border-gray-200 bg-white ${disabled ? "pointer-events-none opacity-60" : "cursor-pointer"}`}
-              >
-                <div className="relative aspect-video overflow-hidden bg-gray-50">
-                  <div className="absolute left-3 top-3 z-10 rounded bg-red-500 px-2 py-0.5 text-[10px] font-extrabold uppercase text-white">
-                    Live
-                  </div>
-                  <div className="absolute bottom-3 left-3 z-10 rounded bg-black/50 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">
-                    {card.viewers}
-                  </div>
-                  <div className="flex h-full w-full items-center justify-center bg-gray-200">
-                    <PlaceholderPlayGlyph />
-                  </div>
-                </div>
-                <div className="space-y-3 p-5">
-                  <h3 className="text-base font-bold leading-snug text-gray-900">{card.title}</h3>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{card.referee}</p>
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {card.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="rounded-lg bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-600"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
+            {loadingRooms ? (
+              <div className="rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500">
+                Loading live discussions...
               </div>
-            ))}
+            ) : liveRooms.length === 0 ? (
+              <div className="rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500">
+                No live discussions yet. Create a room to populate this list.
+              </div>
+            ) : (
+              liveRooms.map((card) => (
+                <div
+                  key={card.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={disabled ? undefined : () => onGoLive(card)}
+                  onKeyDown={
+                    disabled
+                      ? undefined
+                      : (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onGoLive(card);
+                          }
+                        }
+                  }
+                  className={`overflow-hidden rounded-2xl border border-gray-200 bg-white ${disabled ? "pointer-events-none opacity-60" : "cursor-pointer"}`}
+                >
+                  <div className="relative aspect-video overflow-hidden bg-gray-50">
+                    <div className="absolute left-3 top-3 z-10 rounded bg-red-500 px-2 py-0.5 text-[10px] font-extrabold uppercase text-white">
+                      Live
+                    </div>
+                    <div className="absolute bottom-3 left-3 z-10 rounded bg-black/50 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">
+                      {card.viewers} viewers
+                    </div>
+                    <div className="flex h-full w-full items-center justify-center bg-gray-200">
+                      <PlaceholderPlayGlyph />
+                    </div>
+                  </div>
+                  <div className="space-y-3 p-5">
+                    <h3 className="text-base font-bold leading-snug text-gray-900">{card.title}</h3>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{card.referee}</p>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {card.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded-lg bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-600"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </section>
       </div>
@@ -411,19 +456,15 @@ function LandingHomeView({
   );
 }
 
-function MatchmakingView({ onCancel, onMatched }: { onCancel: () => void; onMatched: () => void }) {
-  const [found, setFound] = useState(false);
-
-  useEffect(() => {
-    const foundTimer = window.setTimeout(() => setFound(true), 3000);
-    const matchTimer = window.setTimeout(onMatched, 4300);
-
-    return () => {
-      window.clearTimeout(foundTimer);
-      window.clearTimeout(matchTimer);
-    };
-  }, [onMatched]);
-
+function MatchmakingView({
+  onCancel,
+  found,
+  statusText,
+}: {
+  onCancel: () => void;
+  found: boolean;
+  statusText: string;
+}) {
   return (
     <div className="flex h-screen flex-col items-center justify-center bg-[#f8f7f4] px-6">
       <div
@@ -438,11 +479,11 @@ function MatchmakingView({ onCancel, onMatched }: { onCancel: () => void; onMatc
 
         <div className="mb-2 flex items-center gap-2">
           <div className="h-1.5 w-1.5 animate-ping rounded-full bg-[#ff4d00]" />
-          <h2 className="text-lg font-black uppercase tracking-[0.2em]">{found ? "Match Found" : "Searching"}</h2>
+          <h2 className="text-lg font-black uppercase tracking-[0.2em]">{found ? "Room Found" : "Searching"}</h2>
         </div>
 
         <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
-          {found ? "Preparing the arena..." : "Waiting for a stranger..."}
+          {statusText}
         </p>
 
         <BrandButton
@@ -462,42 +503,402 @@ type ArenaLogEntry =
   | { type: "spacer" }
   | { type: "stranger" | "you" | "ai"; text: string };
 
-const DEFAULT_ARENA_LOG: ArenaLogEntry[] = [
-  { type: "system", text: "You are now debating with a random stranger. Say hi!" },
-  { type: "system", text: "AI Referee is keeping tabs. Topic: Intellectual Property." },
-  { type: "spacer" },
-  {
-    type: "stranger",
-    text: "AI is just a tool, like a brush. The artist who uses the prompt should own the final piece.",
-  },
-  {
-    type: "you",
-    text: "But a brush doesn't have its own training data sourced from billions of human works. The machine is doing the heavy lifting.",
-  },
-  { type: "spacer" },
-  { type: "ai", text: "Both sides are clear. Stranger needs limits. You need an example." },
-];
+const DEFAULT_ARENA_LOG: ArenaLogEntry[] = [];
 
-function ArenaView({ onLeave }: { onLeave: () => void }) {
+function ArenaView({
+  onLeave,
+  onNextStranger,
+  roomId,
+  topic,
+}: {
+  onLeave: () => void;
+  /** Omegle-style: disconnect and search for a new opponent with the same topic. */
+  onNextStranger: (roomId: string) => void;
+  roomId: string;
+  topic: string;
+}) {
   const [message, setMessage] = useState("");
   const [log, setLog] = useState<ArenaLogEntry[]>(() => [...DEFAULT_ARENA_LOG]);
+  const [sending, setSending] = useState(false);
+  const [scoring, setScoring] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [webrtcStatus, setWebrtcStatus] = useState("Camera off");
+  const [myUserId, setMyUserId] = useState("");
+  const [remoteUserId, setRemoteUserId] = useState<string | null>(null);
+  const [guestMode, setGuestMode] = useState(false);
+
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const signalsRef = useRef<{
+    supabase: ReturnType<typeof createSupabaseClient>;
+    channel: ReturnType<typeof subscribeSignals>["channel"];
+  } | null>(null);
+  const broadcastRef = useRef<BroadcastChannel | null>(null);
 
   function goToNextStranger() {
+    void shutdownWebRtc();
     setMessage("");
     setLog([...DEFAULT_ARENA_LOG]);
+    onNextStranger(roomId);
   }
 
-  function sendMessage(event: React.FormEvent<HTMLFormElement>) {
+  async function startCameraAndSync() {
+    if (cameraReady) return;
+    if (!roomId) {
+      setWebrtcStatus("Room not ready");
+      return;
+    }
+    if (!localVideoRef.current || !remoteVideoRef.current) {
+      setWebrtcStatus("Video elements not ready");
+      return;
+    }
+
+    try {
+      const supabase = createSupabaseClient();
+      const { data, error } = await supabase.auth.getUser();
+      const userId =
+        !error && data.user
+          ? data.user.id
+          : `guest_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`;
+      setMyUserId(userId);
+      const isGuest = !data.user;
+      setGuestMode(isGuest);
+
+      const peer = createDebatePeerConnection();
+      peerRef.current = peer;
+      localStreamRef.current = await attachLocalMedia(peer, localVideoRef.current);
+      peer.ontrack = (event) => {
+        const incoming = event.streams[0];
+        if (!incoming || !remoteVideoRef.current) return;
+
+        // Safety guard: never render our own local stream in Stranger tile.
+        if (localStreamRef.current && incoming.id === localStreamRef.current.id) {
+          setWebrtcStatus("Ignoring self-stream in remote tile");
+          return;
+        }
+
+        remoteVideoRef.current.srcObject = incoming;
+      };
+      setCameraReady(true);
+      setWebrtcStatus("Camera on");
+
+      if (!isGuest) {
+        await upsertPresence({
+          roomId,
+          userId,
+          role: "affirmative",
+          isOnline: true,
+        });
+      }
+
+      peer.onicecandidate = async (event) => {
+        if (!event.candidate) return;
+        try {
+          if (isGuest && broadcastRef.current) {
+            broadcastRef.current.postMessage({
+              roomId,
+              senderUserId: userId,
+              targetUserId: remoteUserId,
+              signal_type: "ice_candidate",
+              payload: event.candidate.toJSON(),
+            });
+          } else {
+            await sendSignal({
+              roomId,
+              senderUserId: userId,
+              targetUserId: remoteUserId,
+              signalType: "ice_candidate",
+              payload: event.candidate.toJSON() as Record<string, unknown>,
+            });
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setWebrtcStatus(`ICE sync error: ${msg}`);
+        }
+      };
+      const handleSignal = async (signal: {
+        sender_user_id: string;
+        target_user_id?: string | null;
+        signal_type: "offer" | "answer" | "ice_candidate" | "bye";
+        payload: Record<string, unknown>;
+      }) => {
+        try {
+          if (signal.sender_user_id === userId) return;
+          if (signal.target_user_id && signal.target_user_id !== userId) return;
+
+          if (signal.signal_type === "offer") {
+            setRemoteUserId(signal.sender_user_id);
+            await peer.setRemoteDescription(
+              new RTCSessionDescription(signal.payload as unknown as RTCSessionDescriptionInit)
+            );
+            const answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+            if (isGuest && broadcastRef.current) {
+              broadcastRef.current.postMessage({
+                roomId,
+                senderUserId: userId,
+                targetUserId: signal.sender_user_id,
+                signal_type: "answer",
+                payload: answer,
+              });
+            } else {
+              await sendSignal({
+                roomId,
+                senderUserId: userId,
+                targetUserId: signal.sender_user_id,
+                signalType: "answer",
+                payload: answer as unknown as Record<string, unknown>,
+              });
+            }
+            setWebrtcStatus("Connected");
+          } else if (signal.signal_type === "answer") {
+            await peer.setRemoteDescription(
+              new RTCSessionDescription(signal.payload as unknown as RTCSessionDescriptionInit)
+            );
+            setWebrtcStatus("Connected");
+          } else if (signal.signal_type === "ice_candidate") {
+            await peer.addIceCandidate(
+              new RTCIceCandidate(signal.payload as unknown as RTCIceCandidateInit)
+            );
+          } else if (signal.signal_type === "bye") {
+            setWebrtcStatus("Peer disconnected");
+          } else {
+            setWebrtcStatus("Unknown signal received");
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setWebrtcStatus(`Signal error: ${msg}`);
+        }
+      };
+
+      if (isGuest) {
+        const bc = new BroadcastChannel(`debate-webrtc-${roomId}`);
+        broadcastRef.current = bc;
+        bc.onmessage = (event: MessageEvent) => {
+          const msg = event.data as {
+            roomId: string;
+            senderUserId: string;
+            targetUserId?: string | null;
+            signal_type: "offer" | "answer" | "ice_candidate" | "bye" | "hello";
+            payload?: Record<string, unknown>;
+          };
+          if (!msg || msg.roomId !== roomId || msg.senderUserId === userId) return;
+          if (msg.signal_type === "hello") {
+            setRemoteUserId(msg.senderUserId);
+            if (userId < msg.senderUserId) {
+              void (async () => {
+                const offer = await peer.createOffer();
+                await peer.setLocalDescription(offer);
+                bc.postMessage({
+                  roomId,
+                  senderUserId: userId,
+                  targetUserId: msg.senderUserId,
+                  signal_type: "offer",
+                  payload: offer,
+                });
+                setWebrtcStatus("Calling peer...");
+              })();
+            }
+            return;
+          }
+          if (!msg.payload) return;
+          void handleSignal({
+            sender_user_id: msg.senderUserId,
+            target_user_id: msg.targetUserId ?? null,
+            signal_type: msg.signal_type,
+            payload: msg.payload,
+          });
+        };
+        bc.postMessage({ roomId, senderUserId: userId, signal_type: "hello" });
+        setWebrtcStatus("Guest mode: waiting for peer...");
+      } else {
+        signalsRef.current = subscribeSignals(roomId, (signal) => {
+          void handleSignal(signal);
+        });
+
+        const { data: others } = await supabase
+          .from("room_presence")
+          .select("user_id")
+          .eq("room_id", roomId)
+          .eq("is_online", true)
+          .neq("user_id", userId)
+          .order("joined_at", { ascending: true })
+          .limit(1);
+
+        const otherUserId = others?.[0]?.user_id as string | undefined;
+        if (otherUserId) {
+          setRemoteUserId(otherUserId);
+          const iAmCaller = userId < otherUserId;
+          if (iAmCaller) {
+            const offer = await peer.createOffer();
+            await peer.setLocalDescription(offer);
+            await sendSignal({
+              roomId,
+              senderUserId: userId,
+              targetUserId: otherUserId,
+              signalType: "offer",
+              payload: offer as unknown as Record<string, unknown>,
+            });
+            setWebrtcStatus("Calling peer...");
+          } else {
+            setWebrtcStatus("Waiting for offer...");
+          }
+        } else {
+          setWebrtcStatus("Waiting for peer...");
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setWebrtcStatus(`Failed to start camera/sync: ${msg}`);
+    }
+  }
+
+  async function shutdownWebRtc() {
+    if (signalsRef.current) {
+      await unsubscribeSignals(signalsRef.current.supabase, signalsRef.current.channel);
+      signalsRef.current = null;
+    }
+    if (broadcastRef.current) {
+      broadcastRef.current.close();
+      broadcastRef.current = null;
+    }
+    if (myUserId && roomId) {
+      if (!guestMode) {
+        try {
+          await upsertPresence({
+            roomId,
+            userId: myUserId,
+            role: "affirmative",
+            isOnline: false,
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    peerRef.current?.close();
+    peerRef.current = null;
+    stopMediaStream(localStreamRef.current);
+    localStreamRef.current = null;
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    setCameraReady(false);
+    setWebrtcStatus("Camera off");
+    setRemoteUserId(null);
+    setGuestMode(false);
+  }
+
+  async function callLiveCheck(text: string): Promise<RefereeEvent[]> {
+    if (!topic || !roomId) return [];
+    try {
+      const res = await fetch("/api/referee/live-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          room_id: roomId,
+          speaker_id: "user",
+          speaker_role: "affirmative",
+          topic,
+          text,
+        }),
+      });
+      if (!res.ok) return [];
+      const data: LiveCheckResponse = await res.json();
+      return data.events ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (signalsRef.current) {
+        void unsubscribeSignals(signalsRef.current.supabase, signalsRef.current.channel);
+        signalsRef.current = null;
+      }
+      peerRef.current?.close();
+      peerRef.current = null;
+      stopMediaStream(localStreamRef.current);
+      localStreamRef.current = null;
+    };
+  }, []);
+
+  async function sendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const clean = message.trim();
-    if (!clean) return;
+    if (!clean || sending) return;
 
-    setLog((current) => [
-      ...current,
-      { type: "you", text: clean },
-      { type: "ai", text: "Claim logged. Add evidence or a concrete example next." },
-    ]);
+    setSending(true);
+    setLog((current) => [...current, { type: "you", text: clean }]);
     setMessage("");
+
+    const events = await callLiveCheck(clean);
+
+    if (events.length > 0) {
+      const feedback = events.map((e) => e.message).join(" ");
+      setLog((current) => [...current, { type: "ai", text: feedback }]);
+    } else {
+      setLog((current) => [...current, { type: "ai", text: "Message recorded." }]);
+    }
+
+    setSending(false);
+  }
+
+  async function endDebate() {
+    if (scoring) return;
+    if (!topic || !roomId) {
+      setLog((current) => [...current, { type: "system", text: "Missing room metadata. Start from a live room first." }]);
+      return;
+    }
+    setScoring(true);
+
+    setLog((current) => [...current, { type: "system", text: "Requesting final score from AI referee..." }]);
+
+    const affirmative = log
+      .filter((e) => e.type === "you")
+      .map((e) => (e as { text: string }).text)
+      .join("\n\n");
+    const negative = log
+      .filter((e) => e.type === "stranger")
+      .map((e) => (e as { text: string }).text)
+      .join("\n\n");
+
+    try {
+      const res = await fetch("/api/referee/final-score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          room_id: roomId,
+          topic,
+          affirmative_transcript: affirmative,
+          negative_transcript: negative,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setLog((current) => [
+          ...current,
+          { type: "system", text: `Scoring failed: ${err.error || "Unknown error"}` },
+        ]);
+      } else {
+        const data: FinalScoreResponse = await res.json();
+        const r = data.result;
+        setLog((current) => [
+          ...current,
+          { type: "spacer" },
+          { type: "system", text: `Final verdict: ${r.winner_recommendation.toUpperCase()} (confidence ${Math.round(r.confidence * 100)}%)` },
+          { type: "ai", text: `You: ${r.affirmative.total} pts | Stranger: ${r.negative.total} pts` },
+          { type: "ai", text: r.summary },
+        ]);
+      }
+    } catch {
+      setLog((current) => [...current, { type: "system", text: "Failed to reach AI referee." }]);
+    }
+
+    setScoring(false);
   }
 
   function OmegleLogLine({ item, index }: { item: ArenaLogEntry; index: number }) {
@@ -549,17 +950,44 @@ function ArenaView({ onLeave }: { onLeave: () => void }) {
         {/* Top row: Stranger | You — stack until ~520px, then two columns (height-capped so chat stays tall). */}
         <div className="grid min-h-0 shrink-0 grid-cols-1 gap-3 min-[520px]:grid-cols-2 min-[520px]:gap-4 min-[520px]:content-start lg:gap-5">
           <div className={`${videoShell} border-black/10 bg-zinc-900`}>
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="absolute inset-0 h-full w-full object-cover"
+            />
             <div className={`pointer-events-none absolute bottom-2 left-0 right-0 text-center min-[480px]:bottom-4 ${metaLabel} text-white/50`}>
               Stranger
             </div>
           </div>
 
           <div className={`${videoShell} border-zinc-300 bg-zinc-200`}>
-            <div className="flex flex-col items-center opacity-30">
-              <div className="mb-1.5 h-9 w-9 rounded-full border-2 border-zinc-400 min-[480px]:mb-2 min-[480px]:h-12 min-[480px]:w-12" />
-              <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 min-[480px]:text-[10px]">
-                Camera On
+            <video
+              ref={localVideoRef}
+              autoPlay
+              muted
+              playsInline
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+            {!cameraReady ? (
+              <div className="relative z-10 flex flex-col items-center">
+                <button
+                  type="button"
+                  onClick={() => void startCameraAndSync()}
+                  className="rounded-md border border-zinc-500 bg-white/85 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-700"
+                >
+                  Turn Camera On
+                </button>
+                <span className="mt-2 text-[9px] font-bold uppercase tracking-widest text-zinc-600 min-[480px]:text-[10px]">
+                  {webrtcStatus}
+                </span>
+              </div>
+            ) : (
+              <span className="absolute left-2 top-2 z-10 rounded bg-black/45 px-2 py-0.5 text-[10px] font-semibold text-white">
+                {webrtcStatus}
               </span>
+            )}
+            <div className="pointer-events-none absolute inset-0 bg-black/10" aria-hidden>
             </div>
             <div className={`pointer-events-none absolute bottom-2 left-0 right-0 text-center min-[480px]:bottom-4 ${metaLabel} text-zinc-500`}>
               You
@@ -574,13 +1002,26 @@ function ArenaView({ onLeave }: { onLeave: () => void }) {
               Session chat
               <span className="ml-2 font-normal text-zinc-500">· AI moderator</span>
             </span>
-            <button
-              type="button"
-              onClick={onLeave}
-              className="self-start border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-600 underline decoration-zinc-400 underline-offset-2 hover:border-zinc-400 hover:bg-zinc-200/80 hover:text-red-700 min-[420px]:self-auto"
-            >
-              Disconnect
-            </button>
+            <div className="flex items-center gap-3 self-start min-[420px]:self-auto">
+              <button
+                type="button"
+                onClick={endDebate}
+                disabled={scoring}
+                className="border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-orange-700 underline decoration-orange-400 underline-offset-2 hover:border-orange-400 hover:bg-orange-100/80 disabled:opacity-50"
+              >
+                {scoring ? "Scoring..." : "End Debate"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void shutdownWebRtc();
+                  onLeave();
+                }}
+                className="border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-600 underline decoration-zinc-400 underline-offset-2 hover:border-zinc-400 hover:bg-zinc-200/80 hover:text-red-700"
+              >
+                Disconnect
+              </button>
+            </div>
           </div>
 
           <div className="custom-scroll omegle-log arena-chat-log min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-[#f0ece2] p-3 text-[13px] shadow-[inset_0_2px_8px_rgba(0,0,0,0.06)] min-[480px]:p-4 min-[480px]:text-[13px] md:p-5 lg:p-6">
@@ -606,9 +1047,10 @@ function ArenaView({ onLeave }: { onLeave: () => void }) {
               <div className="flex w-full gap-2 min-[520px]:w-auto min-[520px]:shrink-0">
                 <button
                   type="submit"
-                  className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-zinc-900 hover:bg-zinc-100 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
+                  disabled={sending}
+                  className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-zinc-900 hover:bg-zinc-100 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white disabled:opacity-50 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
                 >
-                  Send
+                  {sending ? "..." : "Send"}
                 </button>
                 <button
                   type="button"
@@ -631,9 +1073,43 @@ type View = "landing" | "matchmaking" | "arena";
 export default function DebatePlatformPreview() {
   const [view, setView] = useState<View>("landing");
   const [transitioning, setTransitioning] = useState(false);
+  const [pendingTopic, setPendingTopic] = useState("");
+  const [activeRoomId, setActiveRoomId] = useState("");
+  const [activeTopic, setActiveTopic] = useState("");
+  const [matchmakingFound, setMatchmakingFound] = useState(false);
+  const [matchmakingStatus, setMatchmakingStatus] = useState("Waiting for a stranger...");
+
+  const matchmakingChannelRef = useRef<RealtimeChannel | null>(null);
+  const createdWaitingRoomRef = useRef<string | null>(null);
+  const guestMatchTimersRef = useRef<number[]>([]);
+
+  const cleanupMatchmaking = async () => {
+    const roomId = createdWaitingRoomRef.current;
+    createdWaitingRoomRef.current = null;
+
+    if (matchmakingChannelRef.current) {
+      const supabase = createSupabaseClient();
+      await supabase.removeChannel(matchmakingChannelRef.current);
+      matchmakingChannelRef.current = null;
+    }
+
+    if (roomId) {
+      try {
+        const supabase = createSupabaseClient();
+        await supabase
+          .from("debate_rooms")
+          .update({ status: "cancelled", ended_at: new Date().toISOString() })
+          .eq("id", roomId)
+          .eq("status", "waiting");
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  };
 
   const showLanding = () => {
     if (transitioning) return;
+    void cleanupMatchmaking();
     setTransitioning(true);
     window.setTimeout(() => {
       setView("landing");
@@ -641,8 +1117,11 @@ export default function DebatePlatformPreview() {
     }, 520);
   };
 
-  const showMatchmaking = () => {
+  const showMatchmaking = (room?: LiveRoomCard) => {
     if (transitioning || view === "matchmaking" || view === "arena") return;
+    setPendingTopic(room?.topic ?? "");
+    setMatchmakingFound(false);
+    setMatchmakingStatus("Waiting for a stranger...");
     setTransitioning(true);
     window.setTimeout(() => {
       setView("matchmaking");
@@ -650,7 +1129,40 @@ export default function DebatePlatformPreview() {
     }, 520);
   };
 
-  const showArena = () => {
+  /** From arena "Next" — same topic, new random match (Omegle-style). */
+  const startNextStrangerMatch = (endedRoomId: string) => {
+    if (transitioning || view !== "arena") return;
+    void (async () => {
+      try {
+        const supabase = createSupabaseClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user && endedRoomId) {
+          await supabase
+            .from("debate_rooms")
+            .update({ status: "completed", ended_at: new Date().toISOString() })
+            .eq("id", endedRoomId);
+        }
+      } catch {
+        // best-effort; RLS or guest mode may skip
+      }
+    })();
+    void cleanupMatchmaking();
+    setPendingTopic(activeTopic || pendingTopic || "");
+    setMatchmakingFound(false);
+    setMatchmakingStatus("Looking for someone new...");
+    setTransitioning(true);
+    window.setTimeout(() => {
+      setView("matchmaking");
+      window.setTimeout(() => setTransitioning(false), 420);
+    }, 520);
+  };
+
+  const showArena = (roomId: string, topic: string) => {
+    createdWaitingRoomRef.current = null;
+    setActiveRoomId(roomId);
+    setActiveTopic(topic);
     setTransitioning(true);
     window.setTimeout(() => {
       setView("arena");
@@ -658,13 +1170,141 @@ export default function DebatePlatformPreview() {
     }, 520);
   };
 
+  useEffect(() => {
+    if (view !== "matchmaking") return;
+
+    let cancelled = false;
+    guestMatchTimersRef.current = [];
+
+    const runMatchmaking = async () => {
+      try {
+        const supabase = createSupabaseClient();
+        const {
+          data: { user },
+          error: authError,
+        } = await supabase.auth.getUser();
+
+        if (authError || !user) {
+          // Guest fallback: keep app testable without auth, but not persisted matchmaking.
+          setMatchmakingStatus("Guest mode: local test match");
+          const t1 = window.setTimeout(() => {
+            if (cancelled) return;
+            setMatchmakingFound(true);
+            setMatchmakingStatus("Preparing the arena...");
+            const roomId =
+              typeof crypto !== "undefined" && "randomUUID" in crypto
+                ? crypto.randomUUID()
+                : `room_${Date.now()}`;
+            const t2 = window.setTimeout(() => {
+              if (cancelled) return;
+              showArena(roomId, pendingTopic || "Open debate");
+            }, 700);
+            guestMatchTimersRef.current.push(t2);
+          }, 1200);
+          guestMatchTimersRef.current.push(t1);
+          return;
+        }
+
+        setMatchmakingStatus("Searching Supabase rooms...");
+
+        const { data: waitingRoom } = await supabase
+          .from("debate_rooms")
+          .select("id, topic, affirmative_user_id")
+          .eq("status", "waiting")
+          .not("affirmative_user_id", "is", null)
+          .neq("affirmative_user_id", user.id)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (waitingRoom?.id) {
+          const { data: claimed } = await supabase
+            .from("debate_rooms")
+            .update({
+              negative_user_id: user.id,
+              status: "active",
+              started_at: new Date().toISOString(),
+            })
+            .eq("id", waitingRoom.id)
+            .eq("status", "waiting")
+            .is("negative_user_id", null)
+            .select("id, topic")
+            .maybeSingle();
+
+          if (claimed?.id) {
+            if (cancelled) return;
+            setMatchmakingFound(true);
+            setMatchmakingStatus("Match found. Entering arena...");
+            window.setTimeout(() => {
+              if (!cancelled) showArena(claimed.id, claimed.topic || pendingTopic || "Open debate");
+            }, 700);
+            return;
+          }
+        }
+
+        const topic = pendingTopic || "Open debate";
+        const { data: createdRoom } = await supabase
+          .from("debate_rooms")
+          .insert({
+            topic,
+            debate_format: "casual_1v1",
+            affirmative_user_id: user.id,
+            status: "waiting",
+          })
+          .select("id, topic")
+          .single();
+
+        if (!createdRoom?.id || cancelled) return;
+        createdWaitingRoomRef.current = createdRoom.id;
+        setMatchmakingStatus("Waiting for opponent...");
+
+        matchmakingChannelRef.current = supabase
+          .channel(`matchmaking:${createdRoom.id}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "UPDATE",
+              schema: "public",
+              table: "debate_rooms",
+              filter: `id=eq.${createdRoom.id}`,
+            },
+            (payload) => {
+              const room = payload.new as { id: string; status: string; topic: string };
+              if (room.status === "active") {
+                setMatchmakingFound(true);
+                setMatchmakingStatus("Match found. Entering arena...");
+                window.setTimeout(() => {
+                  if (!cancelled) showArena(room.id, room.topic || topic);
+                }, 700);
+              }
+            }
+          )
+          .subscribe();
+      } catch {
+        setMatchmakingStatus("Matchmaking unavailable. Try again.");
+      }
+    };
+
+    void runMatchmaking();
+    return () => {
+      cancelled = true;
+      guestMatchTimersRef.current.forEach((id) => window.clearTimeout(id));
+      guestMatchTimersRef.current = [];
+      void cleanupMatchmaking();
+    };
+  }, [view, pendingTopic]);
+
   if (view === "landing") {
     return (
       <main className="min-h-screen font-sans antialiased">
         <div
           className={`transition-all duration-500 ease-out ${transitioning ? "scale-[0.992] opacity-0 blur-[2px]" : "scale-100 opacity-100 blur-0"}`}
         >
-          <LandingHomeView onLogo={showLanding} onGoLive={showMatchmaking} transitioning={transitioning} />
+          <LandingHomeView
+            onLogo={showLanding}
+            onGoLive={showMatchmaking}
+            transitioning={transitioning}
+          />
         </div>
       </main>
     );
@@ -688,9 +1328,19 @@ export default function DebatePlatformPreview() {
         className={`transition-all duration-500 ease-out ${transitioning ? "scale-[0.992] opacity-0 blur-[2px]" : "scale-100 opacity-100 blur-0"}`}
       >
         {view === "arena" ? (
-          <ArenaView onLeave={showLanding} />
+          <ArenaView
+            key={activeRoomId || "arena"}
+            onLeave={showLanding}
+            onNextStranger={startNextStrangerMatch}
+            roomId={activeRoomId}
+            topic={activeTopic}
+          />
         ) : (
-          <MatchmakingView onCancel={showLanding} onMatched={showArena} />
+          <MatchmakingView
+            onCancel={showLanding}
+            found={matchmakingFound}
+            statusText={matchmakingStatus}
+          />
         )}
       </div>
     </main>
