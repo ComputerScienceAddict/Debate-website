@@ -570,9 +570,9 @@ function ArenaView({ onLeave }: { onLeave: () => void }) {
         {/* Bottom row: full-width chat — flex-1 + min-h-0 so the log fills everything between videos and composer */}
         <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden rounded-md border-2 border-zinc-400 bg-zinc-300/50 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] min-[480px]:rounded-lg">
           <div className="flex shrink-0 flex-col gap-1 border-b-2 border-zinc-400 bg-gradient-to-b from-zinc-200 via-zinc-100 to-zinc-200 px-2 py-1.5 min-[420px]:flex-row min-[420px]:items-center min-[420px]:justify-between min-[420px]:gap-2 min-[420px]:px-3 sm:py-2 md:px-4">
-            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-800 min-[480px]:text-[11px] min-[480px]:tracking-[0.16em]">
-              <span className="text-zinc-500">[</span> DebateRoom — Chat / AI referee{" "}
-              <span className="text-zinc-500">]</span>
+            <span className="text-[11px] font-semibold tracking-wide text-zinc-800 min-[480px]:text-xs">
+              Session chat
+              <span className="ml-2 font-normal text-zinc-500">· AI moderator</span>
             </span>
             <button
               type="button"
@@ -677,7 +677,9 @@ export default function DebatePlatformPreview() {
           <LogoButton onClick={showLanding} spinning={transitioning} />
           <div />
           <div className="flex items-center justify-end gap-6">
-            <StartSessionButton onClick={showMatchmaking} transitioning={transitioning} />
+            {view === "matchmaking" ? (
+              <StartSessionButton onClick={showMatchmaking} transitioning={transitioning} />
+            ) : null}
           </div>
         </div>
       </nav>
