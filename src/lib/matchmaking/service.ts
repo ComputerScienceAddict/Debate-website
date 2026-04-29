@@ -240,14 +240,11 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
 
   const oppId = best.oppId;
 
-  // Atomically claim the opponent by updating their status to "matched".
-  // Only one user can succeed if both try simultaneously.
+  // Atomically claim the opponent by DELETING their queue row.
+  // If delete returns 0 rows, someone else claimed them first.
   const { data: claimedRows, error: claimErr } = await admin
     .from("matchmaking_queue")
-    .update({
-      status: "matched",
-      last_attempt_at: new Date().toISOString(),
-    })
+    .delete()
     .eq("user_id", oppId)
     .eq("status", "waiting")
     .select("user_id");
@@ -257,15 +254,12 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
     return {
       matched: false,
       queued: true,
-      reason: "Opponent matched with someone else. Searching again...",
+      reason: "Opponent just matched with someone else. Searching again...",
     };
   }
 
-  // Also mark self as matched to prevent others from claiming us
-  await admin
-    .from("matchmaking_queue")
-    .update({ status: "matched" })
-    .eq("user_id", userId);
+  // Remove self from queue too — we have our opponent
+  await admin.from("matchmaking_queue").delete().eq("user_id", userId);
 
   const oppMap = await loadPreferenceMap(admin, oppId);
   const o = orderedPair(userId, oppId);
@@ -293,9 +287,7 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
     .single();
 
   if (roomErr || !roomRow) {
-    // Rollback: put both back to waiting
-    await admin.from("matchmaking_queue").update({ status: "waiting" }).eq("user_id", userId);
-    await admin.from("matchmaking_queue").update({ status: "waiting" }).eq("user_id", oppId);
+    // Both already deleted from queue; just clean up the failed room
     return { error: roomErr?.message ?? "Failed to create room", status: 500 };
   }
 
@@ -315,8 +307,6 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
 
   if (matchErr || !matchRow) {
     await admin.from("debate_rooms").delete().eq("id", roomId);
-    await admin.from("matchmaking_queue").update({ status: "waiting" }).eq("user_id", userId);
-    await admin.from("matchmaking_queue").update({ status: "waiting" }).eq("user_id", oppId);
     return { error: matchErr?.message ?? "Failed to create match record", status: 500 };
   }
 
@@ -330,10 +320,6 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
   if (linkErr) {
     return { error: linkErr.message, status: 500 };
   }
-
-  // Successfully matched - remove both from queue
-  await admin.from("matchmaking_queue").delete().eq("user_id", userId);
-  await admin.from("matchmaking_queue").delete().eq("user_id", oppId);
 
   const profileByUser = await loadDisplayNames(admin, [userId, oppId]);
   const conflictsPayload: GenerateTopicRequest["conflicts"] = conflicts.map(

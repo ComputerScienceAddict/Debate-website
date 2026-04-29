@@ -1850,29 +1850,40 @@ export default function DebatePlatformPreview() {
 
         setMatchmakingStatus(joinData.reason || "Waiting for opponent...");
 
+        // Poll the status endpoint (read-only, no side effects) until matched
         const pollStatus = async () => {
           if (cancelled) return;
 
           try {
-            const joinAgainRes = await fetch("/api/matchmaking/join", { method: "POST" });
-            const joinAgainData = await joinAgainRes.json();
+            const statusRes = await fetch("/api/matchmaking/status");
+            const statusData = await statusRes.json();
 
             if (cancelled) return;
 
-            if (joinAgainData.matched && joinAgainData.room_id) {
+            if (statusData.state === "matched" && statusData.room_id) {
               setMatchmakingFound(true);
               setMatchmakingStatus("Match found. Entering arena...");
               window.setTimeout(() => {
-                if (!cancelled) showArena(joinAgainData.room_id, joinAgainData.topic || "Open debate");
+                if (!cancelled) showArena(statusData.room_id, statusData.topic || "Open debate");
               }, 700);
               return;
             }
 
-            if (joinAgainData.reason) {
-              setMatchmakingStatus(joinAgainData.reason);
+            if (statusData.state === "idle") {
+              // Fell out of queue without a match — re-join once
+              const rejoinRes = await fetch("/api/matchmaking/join", { method: "POST" });
+              const rejoinData = await rejoinRes.json();
+              if (rejoinData.matched && rejoinData.room_id) {
+                setMatchmakingFound(true);
+                setMatchmakingStatus("Match found. Entering arena...");
+                window.setTimeout(() => {
+                  if (!cancelled) showArena(rejoinData.room_id, rejoinData.topic || "Open debate");
+                }, 700);
+                return;
+              }
             }
 
-            pollTimer = setTimeout(pollStatus, 2500);
+            pollTimer = setTimeout(pollStatus, 2000);
           } catch {
             if (!cancelled) {
               pollTimer = setTimeout(pollStatus, 3000);
@@ -1880,7 +1891,7 @@ export default function DebatePlatformPreview() {
           }
         };
 
-        pollTimer = setTimeout(pollStatus, 2000);
+        pollTimer = setTimeout(pollStatus, 1500);
       } catch {
         setMatchmakingStatus("Matchmaking unavailable. Try again.");
       }

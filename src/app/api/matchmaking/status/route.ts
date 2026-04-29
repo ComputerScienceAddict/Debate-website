@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function GET() {
   try {
+    // Auth check via regular client (cookies)
     const supabase = await createClient();
     const {
       data: { user },
@@ -12,60 +14,41 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // First check if user has an active/waiting room (they may have been matched by opponent)
-    const { data: rooms, error: roomErr } = await supabase
+    // Use admin client for reads so RLS never blocks the check
+    let admin: ReturnType<typeof createAdminClient>;
+    try {
+      admin = createAdminClient();
+    } catch {
+      return NextResponse.json({ error: "Server misconfigured" }, { status: 503 });
+    }
+
+    // Check if the user has an active matched room
+    const { data: activeRoom } = await admin
       .from("debate_rooms")
-      .select("id, topic, status, match_record_id")
-      .or(
-        `affirmative_user_id.eq.${user.id},negative_user_id.eq.${user.id}`
-      )
-      .in("status", ["waiting", "active"])
+      .select("id, topic")
+      .or(`affirmative_user_id.eq.${user.id},negative_user_id.eq.${user.id}`)
+      .eq("status", "active")
+      .not("match_record_id", "is", null)
       .order("created_at", { ascending: false })
-      .limit(5);
+      .limit(1)
+      .maybeSingle();
 
-    if (roomErr) {
-      return NextResponse.json({ error: roomErr.message }, { status: 500 });
+    if (activeRoom?.id) {
+      return NextResponse.json({
+        state: "matched" as const,
+        room_id: activeRoom.id as string,
+        topic: (activeRoom.topic as string) || "Open debate",
+      });
     }
 
-    for (const r of rooms ?? []) {
-      if (r.match_record_id && r.status === "active") {
-        return NextResponse.json({
-          state: "matched" as const,
-          room_id: r.id as string,
-          topic: r.topic as string,
-        });
-      }
-    }
-
-    // Check queue status
-    const { data: q } = await supabase
+    // Check if still in queue
+    const { data: q } = await admin
       .from("matchmaking_queue")
-      .select("user_id, status")
+      .select("user_id")
       .eq("user_id", user.id)
       .maybeSingle();
 
     if (q) {
-      if (q.status === "matched") {
-        // We were matched by someone else - check for room again
-        const { data: matchedRooms } = await supabase
-          .from("debate_rooms")
-          .select("id, topic")
-          .or(
-            `affirmative_user_id.eq.${user.id},negative_user_id.eq.${user.id}`
-          )
-          .eq("status", "active")
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (matchedRooms) {
-          return NextResponse.json({
-            state: "matched" as const,
-            room_id: matchedRooms.id as string,
-            topic: matchedRooms.topic as string,
-          });
-        }
-      }
       return NextResponse.json({ state: "queued" as const });
     }
 
