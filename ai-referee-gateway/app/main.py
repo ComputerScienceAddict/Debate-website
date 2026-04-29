@@ -14,9 +14,17 @@ from app.schemas import (
     FinalScoreRequest,
     FinalScoreResponse,
     FinalScoreResult,
+    GenerateTopicRequest,
+    GenerateTopicResponse,
+    GeneratedTopicJson,
 )
 from app.referee_rules import analyze_live_rules
-from app.prompts import REFEREE_SYSTEM_PROMPT, build_final_score_prompt
+from app.prompts import (
+    REFEREE_SYSTEM_PROMPT,
+    GENERATE_TOPIC_SYSTEM_PROMPT,
+    build_final_score_prompt,
+    build_generate_topic_prompt,
+)
 from app.ollama_client import ollama_chat_json, OllamaError
 from app.scoring import normalize_result
 
@@ -131,4 +139,55 @@ async def final_score(request: Request, body: FinalScoreRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Final scoring failed: {str(exc)}"
+        )
+
+
+@app.post(
+    "/referee/generate-topic",
+    response_model=GenerateTopicResponse,
+    dependencies=[Depends(verify_gateway_key)],
+)
+@limiter.limit("30/minute")
+async def generate_debate_topic(request: Request, body: GenerateTopicRequest):
+    if not body.conflicts:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one tag conflict is required to generate a debate topic.",
+        )
+
+    user_prompt = build_generate_topic_prompt(
+        debate_format=body.debate_format,
+        user_a_name=body.user_a_name,
+        user_b_name=body.user_b_name,
+        conflicts=[c.model_dump(mode="python") for c in body.conflicts],
+    )
+
+    try:
+        raw_result = await ollama_chat_json(
+            model=settings.ollama_fast_model,
+            system_prompt=GENERATE_TOPIC_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            timeout_seconds=settings.generate_topic_timeout_seconds,
+        )
+
+        validated = GeneratedTopicJson(**raw_result)
+
+        return GenerateTopicResponse(
+            room_id=body.room_id,
+            model=settings.ollama_fast_model,
+            topic=validated.topic.strip(),
+            resolution=validated.resolution,
+            rationale=validated.rationale,
+        )
+
+    except OllamaError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama topic generation failed: {str(exc)}",
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Topic generation failed: {str(exc)}",
         )

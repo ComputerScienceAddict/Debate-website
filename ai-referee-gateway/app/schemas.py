@@ -77,3 +77,35 @@ class FinalScoreResponse(BaseModel):
     room_id: str
     model: str
     result: FinalScoreResult
+
+
+StanceTriple = Literal["support", "oppose", "neutral"]
+
+
+class TopicConflict(BaseModel):
+    tag_label: str
+    stance_a: StanceTriple
+    stance_b: StanceTriple
+
+
+class GenerateTopicRequest(BaseModel):
+    room_id: str
+    debate_format: str = "casual_1v1"
+    user_a_name: str = "Participant A"
+    user_b_name: str = "Participant B"
+    conflicts: list[TopicConflict] = Field(default_factory=list)
+
+
+class GeneratedTopicJson(BaseModel):
+    topic: str = Field(min_length=1)
+    resolution: Optional[str] = None
+    rationale: Optional[str] = None
+
+
+class GenerateTopicResponse(BaseModel):
+    room_id: str
+    model: str
+    topic: str
+    resolution: Optional[str] = None
+    rationale: Optional[str] = None
+

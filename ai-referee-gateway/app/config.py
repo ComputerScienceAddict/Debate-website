@@ -18,6 +18,7 @@ class Settings(BaseModel):
 
     live_check_max_chars: int = int(os.getenv("LIVE_CHECK_MAX_CHARS", "1200"))
     final_score_min_chars: int = int(os.getenv("FINAL_SCORE_MIN_CHARS", "700"))
+    generate_topic_timeout_seconds: int = int(os.getenv("GENERATE_TOPIC_TIMEOUT_SECONDS", "75"))
 
 
 settings = Settings()

@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import React, { useEffect, useRef, useState } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { LiveCheckResponse, FinalScoreResponse, RefereeEvent } from "@/lib/referee/types";
@@ -17,17 +18,29 @@ import {
   upsertPresence,
 } from "@/lib/webrtc/signaling";
 
-type LogoMarkProps = { spinning?: boolean; size?: "nav" | "large" };
+type LogoMarkProps = {
+  spinning?: boolean;
+  /** Scale pulse up/down instead of rotating (pairing / matchmaking). */
+  pulsing?: boolean;
+  size?: "nav" | "large";
+};
 
 /** TV mark — same asset as welcome hero (`public/debate-room-welcome-mark.png`). */
-function LogoMark({ spinning = false, size = "nav" }: LogoMarkProps) {
+function LogoMark({ spinning = false, pulsing = false, size = "nav" }: LogoMarkProps) {
   const markSize = size === "large" ? "h-20 w-20" : "h-10 w-10";
+
+  const motion =
+    pulsing ?
+      "animate-matchmaking-logo-breathe"
+    : spinning ? "animate-spin"
+    : "";
+
+  const hoverGrow =
+    pulsing ? "" : "transition-transform duration-500 ease-out group-hover:scale-[1.02] hover:scale-[1.02]";
 
   return (
     <div
-      className={`relative shrink-0 bg-transparent transition-transform duration-500 ease-out group-hover:scale-[1.02] hover:scale-[1.02] ${markSize} ${
-        spinning ? "animate-spin" : ""
-      }`}
+      className={`relative shrink-0 bg-transparent will-change-transform ${markSize} ${hoverGrow} ${motion}`}
     >
       <Image
         src="/debate-room-welcome-mark.png"
@@ -76,22 +89,34 @@ function LogoButton({
   );
 }
 
-/** Black pill CTA — matches product nav / reference styling. */
+/** Primary CTA: chunky “chat roulette” / late-web bevel, monospace caps (Omegle-adjacent). */
 function StartSessionButton({
   onClick,
   transitioning,
+  requiresSignIn = false,
 }: {
   onClick: () => void;
   transitioning: boolean;
+  requiresSignIn?: boolean;
 }) {
+  const disabled = transitioning || requiresSignIn;
+  const label =
+    transitioning ? "WAITING…" : requiresSignIn ? "SIGN IN FIRST" : "DEBATE NOW";
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={transitioning}
-      className="rounded-full bg-black px-8 py-3 text-sm font-semibold text-white shadow-md transition-colors hover:bg-neutral-800 disabled:pointer-events-none disabled:opacity-60"
+      disabled={disabled}
+      title={
+        requiresSignIn
+          ? "Create an account or log in to get matched into a debate."
+          : transitioning
+            ? "Finding someone to debate"
+            : "Jump into a random debate"
+      }
+      className="font-sidebar-mono inline-flex shrink-0 select-none items-center justify-center rounded-sm border-2 border-t-[#ffb896] border-l-[#ffc8a8] border-r-[#6b2000] border-b-[#4a1500] bg-gradient-to-b from-[#ff9a5c] via-[#ff4d00] to-[#b83200] px-7 py-2.5 text-[11px] font-bold uppercase tracking-[0.18em] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.45),inset_0_-2px_0_rgba(0,0,0,0.25),2px_3px_0_rgba(0,0,0,0.2)] outline-none transition-[filter,transform,box-shadow] duration-75 hover:brightness-[1.06] active:translate-y-[2px] active:border-t-[#4a1500] active:border-l-[#4a1500] active:border-b-[#ffb896] active:border-r-[#ffb896] active:shadow-[inset_0_2px_4px_rgba(0,0,0,0.35)] focus-visible:ring-2 focus-visible:ring-zinc-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#f3f3f2] disabled:pointer-events-none disabled:translate-y-0 disabled:opacity-40 disabled:brightness-90 disabled:shadow-none"
     >
-      {transitioning ? "Searching..." : "Start Session"}
+      {label}
     </button>
   );
 }
@@ -220,6 +245,15 @@ type LiveRoomCard = {
   tags: string[];
 };
 
+type OnboardingTag = {
+  id: string;
+  slug: string;
+  label: string;
+  description: string | null;
+  category: string;
+  sort_order: number;
+};
+
 function PlaceholderPlayGlyph() {
   return (
     <svg className="h-12 w-12 text-gray-300" fill="currentColor" viewBox="0 0 24 24" aria-hidden>
@@ -232,14 +266,22 @@ function LandingHomeView({
   onLogo,
   onGoLive,
   transitioning,
+  userEmail,
+  onRequestAuth,
+  onLogout,
 }: {
   onLogo: () => void;
   onGoLive: (room?: LiveRoomCard) => void;
   transitioning: boolean;
+  userEmail: string | null;
+  onRequestAuth: (mode?: "login" | "signup", message?: string) => void;
+  onLogout: () => void;
 }) {
   const disabled = transitioning;
   const [liveRooms, setLiveRooms] = useState<LiveRoomCard[]>([]);
   const [loadingRooms, setLoadingRooms] = useState(true);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -263,6 +305,27 @@ function LandingHomeView({
     };
   }, []);
 
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    function handlePointerDown(e: PointerEvent) {
+      if (
+        accountMenuRef.current &&
+        !accountMenuRef.current.contains(e.target as Node)
+      ) {
+        setAccountMenuOpen(false);
+      }
+    }
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === "Escape") setAccountMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [accountMenuOpen]);
+
   const liveChannels = liveRooms.slice(0, 6).map((room) => ({
     id: room.id,
     title: room.title,
@@ -273,30 +336,115 @@ function LandingHomeView({
 
   return (
     <div className="min-h-screen bg-gray-100 text-gray-900 antialiased">
-      <nav className="glass-nav fixed left-0 right-0 top-0 z-50 h-[70px] border-b border-gray-200 bg-white">
-        <div className="mx-auto flex h-full max-w-full items-center justify-between gap-3 px-4 sm:px-6">
-          <LogoButton onClick={onLogo} spinning={transitioning} variant="landing" />
+      <nav className="glass-nav fixed left-0 right-0 top-0 z-50 flex h-[70px] flex-col justify-center border-b border-gray-200 bg-white">
+        <div className="mx-auto flex h-full w-full max-w-[1600px] items-center justify-between gap-4 px-4 sm:px-6">
+          <div className="min-w-0 shrink">
+            <LogoButton onClick={onLogo} spinning={transitioning} variant="landing" />
+          </div>
 
-          <div className="flex shrink-0 items-center gap-3 sm:gap-6">
-            <StartSessionButton onClick={() => onGoLive()} transitioning={transitioning} />
-            <div
-              className="hidden h-9 w-9 shrink-0 rounded-full border border-gray-300 bg-gray-200 sm:block"
-              aria-hidden
-            />
+          <div className="flex min-w-0 flex-1 items-center justify-end">
+            <div className="flex flex-wrap items-center justify-end gap-y-2 sm:gap-y-2 sm:gap-x-3 md:gap-x-4 lg:gap-x-5">
+              <div className="flex shrink-0 items-center">
+                <StartSessionButton
+                  onClick={() => {
+                    if (userEmail) {
+                      onGoLive();
+                      return;
+                    }
+                    onRequestAuth("login", "Log in or sign up to join a debate.");
+                  }}
+                  transitioning={transitioning}
+                  requiresSignIn={!userEmail}
+                />
+              </div>
+
+              {userEmail ?
+                <>
+                  <div className="hidden h-8 w-px shrink-0 self-center bg-gray-200 sm:block" aria-hidden />
+
+                  <div className="relative shrink-0">
+                    <div className="relative" ref={accountMenuRef}>
+                      <button
+                        type="button"
+                        id="account-menu-button"
+                        title={userEmail}
+                        aria-label="Account menu"
+                        aria-expanded={accountMenuOpen}
+                        aria-haspopup="menu"
+                        aria-controls="account-dropdown"
+                        onClick={() => setAccountMenuOpen((open) => !open)}
+                        className="flex h-9 min-h-[36px] min-w-[36px] shrink-0 cursor-pointer items-center justify-center rounded-full border border-gray-300 bg-gray-900 text-xs font-semibold uppercase text-white outline-none ring-offset-2 ring-offset-white transition hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-gray-400"
+                      >
+                        {userEmail.slice(0, 1)}
+                      </button>
+                      {accountMenuOpen ?
+                        <div
+                          id="account-dropdown"
+                          role="menu"
+                          aria-labelledby="account-menu-button"
+                          className="absolute right-0 top-[calc(100%+6px)] z-[100] min-w-[11.5rem] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg"
+                        >
+                          <Link
+                            href="/profile"
+                            role="menuitem"
+                            className="block px-4 py-2.5 text-[13px] font-medium text-gray-800 transition-colors hover:bg-gray-50 sm:text-sm"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Profile
+                          </Link>
+                          <Link
+                            href="/settings"
+                            role="menuitem"
+                            className="block px-4 py-2.5 text-[13px] font-medium text-gray-800 transition-colors hover:bg-gray-50 sm:text-sm"
+                            onClick={() => setAccountMenuOpen(false)}
+                          >
+                            Settings
+                          </Link>
+                          <div className="my-1 border-t border-gray-100" role="separator" />
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="block w-full px-4 py-2.5 text-left text-[13px] font-medium text-red-700 transition-colors hover:bg-red-50 sm:text-sm"
+                            onClick={() => {
+                              setAccountMenuOpen(false);
+                              onLogout();
+                            }}
+                          >
+                            Log out
+                          </button>
+                        </div>
+                      : null}
+                    </div>
+                  </div>
+                </>
+              : (
+                <button
+                  type="button"
+                  onClick={() => onRequestAuth("login")}
+                  className="hidden whitespace-nowrap text-sm font-medium text-gray-600 transition-colors hover:text-gray-900 sm:block"
+                >
+                  Log in / Sign up
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </nav>
 
       <aside className="sidebar fixed bottom-0 left-0 top-[70px] z-40 flex w-[260px] flex-col overflow-hidden border-r border-gray-200 bg-white pl-0 pr-4 max-lg:w-[70px] max-lg:px-2">
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pt-8">
-          <p className="sidebar-text mb-4 shrink-0 px-4 text-[10px] font-black uppercase tracking-[0.15em] text-gray-400 max-lg:hidden">
+          <p className="sidebar-section-label mb-4 shrink-0 px-4 max-lg:hidden">
             Live channels
           </p>
           <nav aria-label="Live channels" className="flex flex-col">
             {loadingRooms ? (
-              <p className="px-4 py-3 text-xs text-gray-400">Loading live channels...</p>
+              <p className="sidebar-copy-muted px-4 py-3 text-gray-500">
+                Loading live channels...
+              </p>
             ) : liveChannels.length === 0 ? (
-              <p className="px-4 py-3 text-xs text-gray-400">No live channels yet.</p>
+              <p className="sidebar-copy-muted px-4 py-3 text-gray-500">
+                No live channels yet.
+              </p>
             ) : (
               liveChannels.map((ch) => (
                 <button
@@ -313,10 +461,10 @@ function LandingHomeView({
                     aria-hidden
                   />
                   <div className="sidebar-text flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-4 py-3 max-lg:hidden">
-                    <span className="text-sm font-semibold leading-snug text-gray-900 group-hover:text-gray-950">
+                    <span className="font-sans text-sm font-semibold leading-snug tracking-tight text-gray-900 group-hover:text-gray-950">
                       {ch.title}
                     </span>
-                    <span className="text-xs text-gray-500">{ch.spectating}</span>
+                    <span className="font-sans text-xs text-gray-500">{ch.spectating}</span>
                   </div>
                 </button>
               ))
@@ -325,17 +473,17 @@ function LandingHomeView({
         </div>
 
         <div className="sidebar-text mt-auto shrink-0 border-t border-gray-100 pb-8 pt-6 max-lg:hidden">
-          <p className="mb-4 px-4 text-[10px] font-black uppercase tracking-[0.15em] text-gray-400">
-            Topics
-          </p>
+          <p className="sidebar-section-label mb-4 px-4">Topics</p>
           <div className="flex flex-wrap gap-2 px-4">
             {topicPills.length === 0 ? (
-              <span className="text-xs text-gray-400">Topics appear when live rooms are available.</span>
+              <span className="sidebar-copy-muted text-gray-500">
+                Topics appear when live rooms are available.
+              </span>
             ) : (
               topicPills.map((topic) => (
                 <span
                   key={topic}
-                  className="rounded-lg bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-600"
+                  className="sidebar-topic-chip rounded-md border border-gray-200/90 bg-[#fafafa] px-2.5 py-1 text-[11px] font-medium text-gray-700"
                 >
                   {topic}
                 </span>
@@ -377,31 +525,18 @@ function LandingHomeView({
           </div>
         </section>
 
-        <section className="px-6 pb-12 sm:px-8">
-          <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="text-xl font-black tracking-tight text-gray-500 uppercase italic">Live discussions</h2>
-            <div className="flex flex-wrap gap-4 text-[10px] font-black uppercase tracking-widest text-gray-400 sm:gap-6">
-              <button type="button" className="border-b-2 border-orange-600 pb-1 text-orange-600">
-                All arena
-              </button>
-              <button type="button" className="pb-1 text-gray-400 transition-colors hover:text-orange-600">
-                Verified only
-              </button>
-              <button type="button" className="pb-1 text-gray-400 transition-colors hover:text-orange-600">
-                High stakes
-              </button>
-            </div>
+        <section className="border-t border-neutral-200/90 px-6 pb-16 pt-10 sm:px-8">
+          <div className="mb-10">
+            <h2 className="discussions-heading">Live discussions</h2>
           </div>
 
-          <div className="grid grid-cols-1 gap-8 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
             {loadingRooms ? (
-              <div className="rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500">
-                Loading live discussions...
-              </div>
+              <p className="discussions-empty col-span-full">Loading…</p>
             ) : liveRooms.length === 0 ? (
-              <div className="rounded-2xl border border-gray-200 bg-white p-6 text-sm text-gray-500">
-                No live discussions yet. Create a room to populate this list.
-              </div>
+              <p className="discussions-empty col-span-full max-w-md">
+                None live yet. Hit Debate now when you are ready.
+              </p>
             ) : (
               liveRooms.map((card) => (
                 <div
@@ -419,27 +554,29 @@ function LandingHomeView({
                           }
                         }
                   }
-                  className={`overflow-hidden rounded-2xl border border-gray-200 bg-white ${disabled ? "pointer-events-none opacity-60" : "cursor-pointer"}`}
+                  className={`overflow-hidden rounded-xl border border-neutral-200/80 bg-white ${disabled ? "pointer-events-none opacity-60" : "cursor-pointer"}`}
                 >
                   <div className="relative aspect-video overflow-hidden bg-gray-50">
-                    <div className="absolute left-3 top-3 z-10 rounded bg-red-500 px-2 py-0.5 text-[10px] font-extrabold uppercase text-white">
-                      Live
+                    <div className="absolute left-3 top-3 z-10 rounded-sm bg-[#dc2626] px-1.5 py-px font-sidebar-mono text-[10px] font-semibold lowercase tracking-wide text-white">
+                      live
                     </div>
-                    <div className="absolute bottom-3 left-3 z-10 rounded bg-black/50 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-sm">
-                      {card.viewers} viewers
+                    <div className="absolute bottom-3 left-3 z-10 rounded-sm bg-black/55 px-1.5 py-px font-sidebar-mono text-[10px] font-medium text-white backdrop-blur-sm">
+                      {card.viewers} watching
                     </div>
                     <div className="flex h-full w-full items-center justify-center bg-gray-200">
                       <PlaceholderPlayGlyph />
                     </div>
                   </div>
-                  <div className="space-y-3 p-5">
-                    <h3 className="text-base font-bold leading-snug text-gray-900">{card.title}</h3>
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{card.referee}</p>
-                    <div className="flex flex-wrap gap-2 pt-1">
+                  <div className="space-y-2 p-5">
+                    <h3 className="font-sans text-[15px] font-semibold leading-snug tracking-tight text-zinc-900">
+                      {card.title}
+                    </h3>
+                    <p className="discussions-card-meta">{card.referee}</p>
+                    <div className="flex flex-wrap gap-1.5 pt-1">
                       {card.tags.map((tag) => (
                         <span
                           key={tag}
-                          className="rounded-lg bg-gray-100 px-3 py-1 text-[11px] font-semibold text-gray-600"
+                          className="sidebar-topic-chip rounded border border-neutral-200/90 bg-neutral-50 px-2 py-0.5 text-[10px] font-medium text-zinc-700"
                         >
                           {tag}
                         </span>
@@ -456,6 +593,399 @@ function LandingHomeView({
   );
 }
 
+function AuthPageView({
+  mode,
+  initialMessage,
+  onBack,
+  onSuccess,
+}: {
+  mode: "login" | "signup";
+  initialMessage?: string | null;
+  onBack: () => void;
+  onSuccess: () => void;
+}) {
+  const [authMode, setAuthMode] = useState<"login" | "signup">(mode);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authMessage, setAuthMessage] = useState<string | null>(initialMessage ?? null);
+
+  useEffect(() => {
+    setAuthMode(mode);
+  }, [mode]);
+
+  async function submitAuthForm(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError(null);
+    setAuthMessage(null);
+    setAuthLoading(true);
+
+    try {
+      const supabase = createSupabaseClient();
+      if (authMode === "login") {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+        if (error) {
+          setAuthError(error.message);
+          return;
+        }
+        onSuccess();
+      } else {
+        const { error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+        });
+        if (error) {
+          setAuthError(error.message);
+          return;
+        }
+        setAuthMessage("Account created. Check your email to verify your account.");
+      }
+    } catch {
+      setAuthError("Auth unavailable. Check Supabase environment variables.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-[#f6f6f4] px-4 py-10 text-gray-900 antialiased">
+      <div className="mx-auto flex w-full max-w-md flex-col gap-5">
+        <div className="flex items-center justify-center border-b border-black/10 pb-4">
+          <LogoMark size="large" />
+        </div>
+        <div className="space-y-1 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight text-[#171717]">
+            {authMode === "login" ? "Welcome back" : "Create your account"}
+          </h1>
+          <p className="text-sm font-normal text-gray-500">
+            {authMode === "login"
+              ? "Log in to start your next debate."
+              : "Sign up to enter the arena."}
+          </p>
+        </div>
+        <form
+          onSubmit={submitAuthForm}
+          className="space-y-3 rounded-xl border border-gray-200 bg-white p-5"
+        >
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none transition-colors focus:border-gray-500"
+          />
+          <input
+            type="password"
+            required
+            minLength={6}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none transition-colors focus:border-gray-500"
+          />
+
+          {authError ? <p className="text-xs text-red-600">{authError}</p> : null}
+          {authMessage ? <p className="text-xs text-green-700">{authMessage}</p> : null}
+
+          <button
+            type="submit"
+            disabled={authLoading}
+            className="w-full rounded-lg bg-black px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-60"
+          >
+            {authLoading ? "Please wait..." : authMode === "login" ? "Log in" : "Create account"}
+          </button>
+        </form>
+
+        <button
+          type="button"
+          onClick={() => {
+            setAuthMode((m) => (m === "login" ? "signup" : "login"));
+            setAuthError(null);
+            setAuthMessage(null);
+          }}
+          className="text-center text-sm font-medium text-gray-600 transition-colors hover:text-gray-900"
+        >
+          {authMode === "login" ? "Need an account? Sign up" : "Already have an account? Log in"}
+        </button>
+
+        <button
+          type="button"
+          onClick={onBack}
+          className="rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+        >
+          Back to Home
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OnboardingTagsView({
+  onBack,
+  onComplete,
+}: {
+  onBack: () => void;
+  onComplete: () => void;
+}) {
+  const [tags, setTags] = useState<OnboardingTag[]>([]);
+  const [slideIndex, setSlideIndex] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Record<string, "support" | "oppose" | "neutral">>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const tagsRes = await fetch("/api/onboarding/tags", { cache: "no-store" });
+        if (!tagsRes.ok) throw new Error("Could not load topics.");
+        const tagsData = (await tagsRes.json()) as { tags?: OnboardingTag[] };
+        if (!cancelled) setTags(Array.isArray(tagsData.tags) ? tagsData.tags : []);
+
+        // Best-effort prefill from existing preferences.
+        try {
+          const supabase = createSupabaseClient();
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+          if (user && !cancelled) {
+            const { data: prefs } = await supabase
+              .from("user_tag_preferences")
+              .select("tag_id, stance")
+              .eq("user_id", user.id);
+            if (prefs && !cancelled) {
+              const next: Record<string, "support" | "oppose" | "neutral"> = {};
+              for (const p of prefs) {
+                if (
+                  p.stance === "support" ||
+                  p.stance === "oppose" ||
+                  p.stance === "neutral"
+                ) {
+                  next[p.tag_id as string] = p.stance;
+                }
+              }
+              setSelected(next);
+            }
+          }
+        } catch {
+          // ignore prefill
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Could not load topics.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tags.length === 0) return;
+    const allowed = new Set(tags.map((t) => t.id));
+    setSelected((prev) => {
+      let changed = false;
+      const next: Record<string, "support" | "oppose" | "neutral"> = { ...prev };
+      for (const id of Object.keys(next)) {
+        if (!allowed.has(id)) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [tags]);
+
+  useEffect(() => {
+    if (tags.length === 0) return;
+    setSlideIndex((i) => Math.min(Math.max(i, 0), tags.length - 1));
+  }, [tags]);
+
+  const answeredAll =
+    tags.length > 0 && tags.every((t) => selected[t.id] !== undefined);
+
+  const slideTopic =
+    !loading && tags.length > 0 ? tags[Math.min(slideIndex, tags.length - 1)] : undefined;
+
+  async function savePreferences() {
+    setError(null);
+    if (!answeredAll || tags.length === 0) {
+      setError("Answer every topic before you finish.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const preferences = tags.map((tag) => ({
+        tag_id: tag.id,
+        stance: selected[tag.id],
+      }));
+      const response = await fetch("/api/onboarding/tags", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preferences }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error ?? "Could not save your answers.");
+      }
+      onComplete();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save your answers.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-[#eff2f7] px-4 py-8 text-[#303545] antialiased">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+        <div className="flex items-center justify-center border-b border-black/10 pb-4">
+          <LogoMark size="large" />
+        </div>
+        <div className="space-y-1 text-center">
+          <h1 className="text-[1.625rem] font-bold tracking-tight text-[#303545] sm:text-[1.75rem]">
+            Your stance
+          </h1>
+          <p className="mx-auto max-w-md text-[0.9375rem] leading-relaxed text-[#646f90]">
+            One topic per screen. After the last answer we save your profile.
+          </p>
+        </div>
+
+        {loading ? (
+          <div className="rounded-2xl border border-[#dfe3ee] bg-white p-10 text-center text-[0.9375rem] text-[#646f90] shadow-[0_4px_24px_rgba(18,69,149,0.06)]">
+            Loading...
+          </div>
+        ) : tags.length === 0 ? (
+          <>
+            <div className="rounded-2xl border border-[#dfe3ee] bg-white p-10 text-center text-[0.9375rem] text-[#646f90] shadow-[0_4px_24px_rgba(18,69,149,0.06)]">
+              No topics are available right now. Try again later.
+            </div>
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={onBack}
+                className="rounded-xl border-2 border-[#dcdfe8] bg-white px-4 py-2.5 text-sm font-semibold text-[#4257b2] transition-colors hover:bg-[#f8fafc]"
+              >
+                Back to home
+              </button>
+            </div>
+          </>
+        ) : slideTopic ? (
+              <div
+                key={slideTopic.id}
+                className="flex min-h-[min(440px,calc(100vh-220px))] flex-col transition-opacity duration-300"
+              >
+                <div
+                  className="flex justify-center gap-2.5 pt-1"
+                  role="status"
+                  aria-live="polite"
+                  aria-label={`Topic ${slideIndex + 1} of ${tags.length}`}
+                >
+                  {tags.map((t, i) => (
+                    <span
+                      key={t.id}
+                      className={`h-2 w-2 shrink-0 rounded-full transition-colors ${
+                        i === slideIndex ? "bg-[#4257b2]"
+                        : i < slideIndex ? "bg-[#4257b2]/85"
+                        : "bg-[#d3dae8]"
+                      }`}
+                    />
+                  ))}
+                </div>
+                <div className="mx-auto mt-7 w-full max-w-xl rounded-2xl border border-[#dfe3ee] bg-white px-6 py-8 shadow-[0_4px_24px_rgba(18,69,149,0.07),0_1px_3px_rgba(0,0,0,0.05)] sm:px-10 sm:py-10">
+                  <div className="text-center">
+                    <h2 className="text-[1.375rem] font-semibold leading-snug text-[#303545] sm:text-2xl">
+                      {slideTopic.label}
+                    </h2>
+                    {slideTopic.description ?
+                      <p className="mx-auto mt-4 max-w-lg text-base leading-relaxed text-[#646f90]">
+                        {slideTopic.description}
+                      </p>
+                    : null}
+                  </div>
+                  <div className="mt-8 flex flex-col gap-3">
+                    {(["support", "oppose", "neutral"] as const).map((stance) => {
+                      const picked = selected[slideTopic.id] === stance;
+                      const label = stance.charAt(0).toUpperCase() + stance.slice(1);
+                      return (
+                        <button
+                          key={stance}
+                          type="button"
+                          onClick={() =>
+                            setSelected((prev) => ({
+                              ...prev,
+                              [slideTopic.id]: stance,
+                            }))
+                          }
+                          className={`w-full rounded-xl border-2 px-4 py-3.5 text-left text-[0.9375rem] font-medium transition-all ${
+                            picked ?
+                              "border-[#4257b2] bg-[#f0f4ff] text-[#4257b2] shadow-sm"
+                            : "border-[#dcdfe8] bg-white text-[#303545] hover:border-[#b4bdd4] hover:bg-[#f8fafc]"
+                          }`}
+                        >
+                          <span className="block truncate">{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+        ) : (
+          <div className="rounded-2xl border border-[#dfe3ee] bg-white p-10 text-center text-[0.9375rem] text-[#646f90] shadow-[0_4px_24px_rgba(18,69,149,0.06)]">
+            Could not load this step. Try reloading the page.
+          </div>
+        )}
+
+        {loading || tags.length === 0 ? null : (
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              if (slideIndex === 0) onBack();
+              else setSlideIndex((i) => i - 1);
+            }}
+            disabled={loading}
+            className="rounded-xl border-2 border-[#dcdfe8] bg-white px-5 py-2.5 text-sm font-semibold text-[#303545] transition-colors hover:border-[#b4bdd4] hover:bg-[#f8fafc] disabled:opacity-60"
+          >
+            {slideIndex === 0 ? "Exit" : "Previous"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (loading || tags.length === 0) return;
+              const topic = tags[slideIndex];
+              setError(null);
+              if (!topic || selected[topic.id] === undefined) {
+                setError("Choose support, oppose, or neutral first.");
+                return;
+              }
+              if (slideIndex >= tags.length - 1) void savePreferences();
+              else setSlideIndex((i) => i + 1);
+            }}
+            disabled={saving || loading || tags.length === 0}
+            className="rounded-xl bg-[#4257b2] px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#364b95] disabled:opacity-60"
+          >
+            {saving ? "Saving..." : slideIndex >= tags.length - 1 ? "Finish" : "Next"}
+          </button>
+        </div>
+        )}
+        {error ? <p className="text-center text-sm text-red-600">{error}</p> : null}
+      </div>
+    </div>
+  );
+}
+
 function MatchmakingView({
   onCancel,
   found,
@@ -466,30 +996,33 @@ function MatchmakingView({
   statusText: string;
 }) {
   return (
-    <div className="flex h-screen flex-col items-center justify-center bg-[#f8f7f4] px-6">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-[#f8f7f4] px-6 py-16">
       <div
-        className={`flex flex-col items-center text-center transition-all duration-700 ease-out ${found ? "scale-[0.98] opacity-80" : "scale-100 opacity-100"}`}
+        className={`flex w-full max-w-md flex-col items-center text-center transition-all duration-700 ease-out ${found ? "scale-[0.99] opacity-85" : "scale-100 opacity-100"}`}
       >
-        <div className="relative mb-8 flex h-32 w-32 items-center justify-center">
-          <div className="absolute inset-0 rounded-full bg-[#ff4d00]/10 blur-2xl" />
-          <div className="absolute h-32 w-32 animate-spin rounded-full border border-[#ff4d00]/20 border-t-[#ff4d00]" />
-          <div className="absolute h-24 w-24 animate-pulse rounded-full border border-black/10 border-b-black/30" />
-          <LogoMark spinning size="large" />
+        <div className="relative mb-10 flex h-44 w-44 items-center justify-center">
+          <div
+            className="absolute inset-[5%] rounded-[35%] bg-[radial-gradient(circle_at_50%_45%,rgba(255,77,0,0.38),transparent_62%)] blur-2xl animate-matchmaking-aura"
+            aria-hidden
+          />
+          <LogoMark pulsing size="large" />
         </div>
 
-        <div className="mb-2 flex items-center gap-2">
-          <div className="h-1.5 w-1.5 animate-ping rounded-full bg-[#ff4d00]" />
-          <h2 className="text-lg font-black uppercase tracking-[0.2em]">{found ? "Room Found" : "Searching"}</h2>
-        </div>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-zinc-400">
+          {found ? "Ready" : "Matching"}
+        </p>
+        <h2 className="mt-3 text-2xl font-bold tracking-tight text-[#121212] sm:text-[1.65rem]">
+          {found ? "Opponent matched" : "Finding your rival"}
+        </h2>
 
-        <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+        <p className="mt-3 max-w-[18rem] text-sm leading-relaxed text-zinc-500">
           {statusText}
         </p>
 
         <BrandButton
           onClick={onCancel}
           variant="ghost"
-          className="mt-12 min-h-[40px] px-4 text-[10px] tracking-widest"
+          className="mt-14 min-h-[42px] rounded-full px-6 text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500 hover:text-zinc-800"
         >
           Cancel
         </BrandButton>
@@ -1068,11 +1601,15 @@ function ArenaView({
   );
 }
 
-type View = "landing" | "matchmaking" | "arena";
+type View = "landing" | "auth" | "onboarding" | "matchmaking" | "arena";
 
 export default function DebatePlatformPreview() {
   const [view, setView] = useState<View>("landing");
   const [transitioning, setTransitioning] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [authPrompt, setAuthPrompt] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [, setOnboardingComplete] = useState(false);
   const [pendingTopic, setPendingTopic] = useState("");
   const [activeRoomId, setActiveRoomId] = useState("");
   const [activeTopic, setActiveTopic] = useState("");
@@ -1082,6 +1619,82 @@ export default function DebatePlatformPreview() {
   const matchmakingChannelRef = useRef<RealtimeChannel | null>(null);
   const createdWaitingRoomRef = useRef<string | null>(null);
   const guestMatchTimersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    let sub: { unsubscribe: () => void } | null = null;
+
+    try {
+      const supabase = createSupabaseClient();
+      void supabase.auth.getUser().then(({ data }) => {
+        if (!mounted) return;
+        setUserEmail(data.user?.email ?? null);
+      });
+      const authSub = supabase.auth.onAuthStateChange((_event, session) => {
+        if (!mounted) return;
+        setUserEmail(session?.user?.email ?? null);
+      });
+      sub = authSub.data.subscription;
+    } catch {
+      if (mounted) setUserEmail(null);
+    }
+
+    return () => {
+      mounted = false;
+      sub?.unsubscribe();
+    };
+  }, []);
+
+  const showAuth = (mode: "login" | "signup" = "login", message?: string) => {
+    setAuthMode(mode);
+    setAuthPrompt(message ?? null);
+    setView("auth");
+  };
+
+  const checkOnboardingStatus = async (): Promise<boolean> => {
+    try {
+      const supabase = createSupabaseClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setOnboardingComplete(false);
+        return false;
+      }
+      const { count: tagCount, error: tagErr } = await supabase
+        .from("political_tags")
+        .select("id", { count: "exact", head: true })
+        .eq("is_active", true);
+      const { count: prefCount, error: prefErr } = await supabase
+        .from("user_tag_preferences")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", user.id);
+      if (prefErr) return false;
+      const needed = tagErr || tagCount === null ? 5 : Math.max(tagCount ?? 1, 1);
+      const complete = (prefCount ?? 0) >= needed;
+      setOnboardingComplete(complete);
+      return complete;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleAuthSuccess = async () => {
+    setAuthPrompt(null);
+    const done = await checkOnboardingStatus();
+    setView(done ? "landing" : "onboarding");
+  };
+
+  const logout = () => {
+    void (async () => {
+      try {
+        const supabase = createSupabaseClient();
+        await supabase.auth.signOut();
+      } catch {
+        // no-op
+      }
+    })();
+  };
 
   const cleanupMatchmaking = async () => {
     const roomId = createdWaitingRoomRef.current;
@@ -1119,14 +1732,26 @@ export default function DebatePlatformPreview() {
 
   const showMatchmaking = (room?: LiveRoomCard) => {
     if (transitioning || view === "matchmaking" || view === "arena") return;
-    setPendingTopic(room?.topic ?? "");
-    setMatchmakingFound(false);
-    setMatchmakingStatus("Waiting for a stranger...");
-    setTransitioning(true);
-    window.setTimeout(() => {
-      setView("matchmaking");
-      window.setTimeout(() => setTransitioning(false), 420);
-    }, 520);
+    void (async () => {
+      const done = await checkOnboardingStatus();
+      if (!userEmail) {
+        showAuth("login", "Log in or sign up to join a debate.");
+        return;
+      }
+      if (!done) {
+        setView("onboarding");
+        return;
+      }
+
+      setPendingTopic(room?.topic ?? "");
+      setMatchmakingFound(false);
+      setMatchmakingStatus("Waiting for a stranger...");
+      setTransitioning(true);
+      window.setTimeout(() => {
+        setView("matchmaking");
+        window.setTimeout(() => setTransitioning(false), 420);
+      }, 520);
+    })();
   };
 
   /** From arena "Next" — same topic, new random match (Omegle-style). */
@@ -1185,23 +1810,15 @@ export default function DebatePlatformPreview() {
         } = await supabase.auth.getUser();
 
         if (authError || !user) {
-          // Guest fallback: keep app testable without auth, but not persisted matchmaking.
-          setMatchmakingStatus("Guest mode: local test match");
-          const t1 = window.setTimeout(() => {
-            if (cancelled) return;
-            setMatchmakingFound(true);
-            setMatchmakingStatus("Preparing the arena...");
-            const roomId =
-              typeof crypto !== "undefined" && "randomUUID" in crypto
-                ? crypto.randomUUID()
-                : `room_${Date.now()}`;
-            const t2 = window.setTimeout(() => {
-              if (cancelled) return;
-              showArena(roomId, pendingTopic || "Open debate");
-            }, 700);
-            guestMatchTimersRef.current.push(t2);
-          }, 1200);
-          guestMatchTimersRef.current.push(t1);
+          setMatchmakingStatus("Please log in to start matchmaking.");
+          window.setTimeout(() => {
+            if (!cancelled) {
+              setAuthMode("login");
+              setAuthPrompt("Please log in to start matchmaking.");
+              setView("auth");
+              setTransitioning(false);
+            }
+          }, 450);
           return;
         }
 
@@ -1304,8 +1921,32 @@ export default function DebatePlatformPreview() {
             onLogo={showLanding}
             onGoLive={showMatchmaking}
             transitioning={transitioning}
+            userEmail={userEmail}
+            onRequestAuth={showAuth}
+            onLogout={logout}
           />
         </div>
+      </main>
+    );
+  }
+
+  if (view === "auth") {
+    return (
+      <main className="min-h-screen font-sans antialiased">
+        <AuthPageView
+          mode={authMode}
+          initialMessage={authPrompt}
+          onBack={showLanding}
+          onSuccess={handleAuthSuccess}
+        />
+      </main>
+    );
+  }
+
+  if (view === "onboarding") {
+    return (
+      <main className="min-h-screen font-sans antialiased">
+        <OnboardingTagsView onBack={showLanding} onComplete={() => setView("landing")} />
       </main>
     );
   }
@@ -1336,11 +1977,7 @@ export default function DebatePlatformPreview() {
             topic={activeTopic}
           />
         ) : (
-          <MatchmakingView
-            onCancel={showLanding}
-            found={matchmakingFound}
-            statusText={matchmakingStatus}
-          />
+          <MatchmakingView onCancel={showLanding} found={matchmakingFound} statusText={matchmakingStatus} />
         )}
       </div>
     </main>

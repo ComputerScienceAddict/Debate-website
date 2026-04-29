@@ -38,3 +38,10 @@ ai-referee-gateway/.env
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python
+**/__pycache__/
+*.pyc
+
+# supabase CLI
+supabase/.temp/

@@ -114,3 +114,50 @@ Scoring instructions:
 - If one side relies mainly on insults, reduce civility and total.
 - If one side does not answer the opponent, reduce rebuttal.
 """
+
+
+GENERATE_TOPIC_SYSTEM_PROMPT = """
+You compose short, impartial debate resolutions for a formal 1v1 policy debate platform.
+
+Goals:
+1) Produce a single yes/no proposition (a "resolution") grounded in tensions between participants' declared stances.
+2) The topic must invite genuine clash and be debated with evidence — no partisan cheerleading wording.
+3) Avoid insults; do not vilify demographics; neutral naming of policies and institutions only.
+4) Keep the resolution concise and decisive (prefer one sentence). Optional second sentence may clarify mechanism or scope.
+
+Return valid JSON ONLY with keys topic, optional resolution wording notes, rationale.
+No markdown. No preamble.
+"""
+
+
+def build_generate_topic_prompt(
+    debate_format: str,
+    user_a_name: str,
+    user_b_name: str,
+    conflicts: list[dict],
+) -> str:
+    conflict_lines = "\n".join(
+        f"- {c['tag_label']}: {user_a_name}={c['stance_a']}, {user_b_name}={c['stance_b']}"
+        for c in conflicts
+    )
+    return f"""
+Debate format: {debate_format}
+
+Speakers:
+- A: {user_a_name}
+- B: {user_b_name}
+
+Declared stance conflicts (shared tags):
+{conflict_lines}
+
+Write a formal debate resolution that maximizes meaningful disagreement on the strongest fault line(s) above.
+
+Return this exact JSON shape:
+
+{{
+  "topic": "Resolved: ... (complete resolution statement)",
+  "resolution": "Optional one-line scope note (or null)",
+  "rationale": "2-4 sentences on why this resolution fits the above stances (or null)"
+}}
+"""
+

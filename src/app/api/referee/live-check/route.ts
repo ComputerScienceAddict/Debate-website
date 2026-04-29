@@ -6,6 +6,20 @@ import type { LiveCheckRequest, LiveCheckResponse } from "@/lib/referee/types";
 const AI_GATEWAY_URL = process.env.AI_GATEWAY_URL || "http://127.0.0.1:3001";
 const AI_GATEWAY_KEY = process.env.AI_GATEWAY_KEY || "";
 const SKIP_AUTH = process.env.REFEREE_PROXY_SKIP_AUTH === "true";
+const ALLOW_UNREACHABLE_GATEWAY_FALLBACK =
+  process.env.REFEREE_LIVE_CHECK_ALLOW_FALLBACK !== "false";
+
+function isGatewayConnectionError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const asErrorWithCause = err as Error & { cause?: unknown };
+  const cause = asErrorWithCause.cause as { code?: string } | undefined;
+  return (
+    cause?.code === "ECONNREFUSED" ||
+    cause?.code === "ENOTFOUND" ||
+    cause?.code === "EHOSTUNREACH" ||
+    cause?.code === "ETIMEDOUT"
+  );
+}
 
 export async function POST(request: NextRequest) {
   if (!SKIP_AUTH) {
@@ -59,6 +73,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(data);
   } catch (err) {
     console.error("Live check proxy error:", err);
+
+    if (ALLOW_UNREACHABLE_GATEWAY_FALLBACK && isGatewayConnectionError(err)) {
+      // Non-blocking fallback for local dev: keep debate flow running without live referee events.
+      const fallback: LiveCheckResponse = {
+        room_id: body.room_id,
+        speaker_id: body.speaker_id,
+        events: [],
+      };
+      return NextResponse.json(fallback);
+    }
+
     return NextResponse.json(
       { error: "Failed to reach AI gateway" },
       { status: 502 }

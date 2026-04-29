@@ -67,3 +67,28 @@ export interface FinalScoreResponse {
   model: string;
   result: FinalScoreResult;
 }
+
+export type StanceTriple = "support" | "oppose" | "neutral";
+
+/** Payload for `/referee/generate-topic` (snake_case to match gateway JSON). */
+export interface TopicConflictPayload {
+  tag_label: string;
+  stance_a: StanceTriple;
+  stance_b: StanceTriple;
+}
+
+export interface GenerateTopicRequest {
+  room_id: string;
+  debate_format?: string;
+  user_a_name?: string;
+  user_b_name?: string;
+  conflicts: TopicConflictPayload[];
+}
+
+export interface GenerateTopicResponse {
+  room_id: string;
+  model: string;
+  topic: string;
+  resolution?: string | null;
+  rationale?: string | null;
+}
