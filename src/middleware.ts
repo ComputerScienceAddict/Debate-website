@@ -1,8 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { normalizeSupabaseUrl } from "@/lib/supabase/url";
 
 export async function middleware(request: NextRequest) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    ? normalizeSupabaseUrl(process.env.NEXT_PUBLIC_SUPABASE_URL)
+    : "";
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   // Allow app boot without Supabase during local setup.

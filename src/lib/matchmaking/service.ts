@@ -120,18 +120,51 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
     };
   }
 
-  const { error: selfErr } = await admin.from("matchmaking_queue").upsert(
-    {
-      user_id: userId,
-      status: "waiting",
-      queued_at: new Date().toISOString(),
-      last_attempt_at: new Date().toISOString(),
-    },
-    { onConflict: "user_id" }
-  );
+  // First check if user was already matched by someone else (or has an active room)
+  const { data: existingRoom } = await admin
+    .from("debate_rooms")
+    .select("id, topic")
+    .or(`affirmative_user_id.eq.${userId},negative_user_id.eq.${userId}`)
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  if (selfErr) {
-    return { error: selfErr.message, status: 500 };
+  if (existingRoom?.id) {
+    // User already has an active room - they were matched!
+    // Clean up queue entry if exists
+    await admin.from("matchmaking_queue").delete().eq("user_id", userId);
+    return {
+      matched: true,
+      room_id: existingRoom.id as string,
+      match_record_id: "",
+      topic: (existingRoom.topic as string) || "Open debate",
+      disagreement_score: 0,
+    };
+  }
+
+  // Check current queue status before upserting
+  const { data: currentQueueEntry } = await admin
+    .from("matchmaking_queue")
+    .select("status")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  // Only upsert if not currently matched (prevent overwriting matched status)
+  if (!currentQueueEntry || currentQueueEntry.status !== "matched") {
+    const { error: selfErr } = await admin.from("matchmaking_queue").upsert(
+      {
+        user_id: userId,
+        status: "waiting",
+        queued_at: currentQueueEntry ? undefined : new Date().toISOString(),
+        last_attempt_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" }
+    );
+
+    if (selfErr) {
+      return { error: selfErr.message, status: 500 };
+    }
   }
 
   const { data: waiting, error: qErr } = await admin
@@ -158,10 +191,19 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
         pair: ReturnType<typeof scoreOpponentPair>;
       }
     | undefined;
+  let fallbackCandidate:
+    | { oppId: string; pair: ReturnType<typeof scoreOpponentPair> }
+    | undefined;
 
   for (const oppId of candidateIds) {
     const oppMap = await loadPreferenceMap(admin, oppId);
     const pair = scoreOpponentPair(selfMap, oppMap);
+
+    // Track first candidate as fallback (in case no one meets overlap rule)
+    if (!fallbackCandidate) {
+      fallbackCandidate = { oppId, pair };
+    }
+
     if (!pair.meetsOverlapRule) continue;
 
     if (
@@ -178,6 +220,15 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
     }
   }
 
+  // If no ideal match but there's a waiting candidate, match anyway (fallback for better UX)
+  if (best === undefined && fallbackCandidate) {
+    best = {
+      oppId: fallbackCandidate.oppId,
+      disagreement: fallbackCandidate.pair.disagreementScore,
+      pair: fallbackCandidate.pair,
+    };
+  }
+
   if (best === undefined) {
     return {
       matched: false,
@@ -188,6 +239,34 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
   }
 
   const oppId = best.oppId;
+
+  // Atomically claim the opponent by updating their status to "matched".
+  // Only one user can succeed if both try simultaneously.
+  const { data: claimedRows, error: claimErr } = await admin
+    .from("matchmaking_queue")
+    .update({
+      status: "matched",
+      last_attempt_at: new Date().toISOString(),
+    })
+    .eq("user_id", oppId)
+    .eq("status", "waiting")
+    .select("user_id");
+
+  if (claimErr || !claimedRows || claimedRows.length === 0) {
+    // Opponent was already claimed by someone else or left queue
+    return {
+      matched: false,
+      queued: true,
+      reason: "Opponent matched with someone else. Searching again...",
+    };
+  }
+
+  // Also mark self as matched to prevent others from claiming us
+  await admin
+    .from("matchmaking_queue")
+    .update({ status: "matched" })
+    .eq("user_id", userId);
+
   const oppMap = await loadPreferenceMap(admin, oppId);
   const o = orderedPair(userId, oppId);
 
@@ -208,12 +287,15 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
       debate_format: DEBATE_FORMAT,
       affirmative_user_id: o.affirmative,
       negative_user_id: o.negative,
-      status: "waiting",
+      status: "active",
     })
     .select("id")
     .single();
 
   if (roomErr || !roomRow) {
+    // Rollback: put both back to waiting
+    await admin.from("matchmaking_queue").update({ status: "waiting" }).eq("user_id", userId);
+    await admin.from("matchmaking_queue").update({ status: "waiting" }).eq("user_id", oppId);
     return { error: roomErr?.message ?? "Failed to create room", status: 500 };
   }
 
@@ -233,6 +315,8 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
 
   if (matchErr || !matchRow) {
     await admin.from("debate_rooms").delete().eq("id", roomId);
+    await admin.from("matchmaking_queue").update({ status: "waiting" }).eq("user_id", userId);
+    await admin.from("matchmaking_queue").update({ status: "waiting" }).eq("user_id", oppId);
     return { error: matchErr?.message ?? "Failed to create match record", status: 500 };
   }
 
@@ -247,6 +331,7 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
     return { error: linkErr.message, status: 500 };
   }
 
+  // Successfully matched - remove both from queue
   await admin.from("matchmaking_queue").delete().eq("user_id", userId);
   await admin.from("matchmaking_queue").delete().eq("user_id", oppId);
 

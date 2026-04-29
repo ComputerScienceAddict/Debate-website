@@ -634,9 +634,13 @@ function AuthPageView({
         }
         onSuccess();
       } else {
+        const redirectTo = `${typeof window !== "undefined" ? window.location.origin : ""}/auth/callback`;
         const { error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
+          options: {
+            emailRedirectTo: redirectTo,
+          },
         });
         if (error) {
           setAuthError(error.message);
@@ -1799,6 +1803,7 @@ export default function DebatePlatformPreview() {
     if (view !== "matchmaking") return;
 
     let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
     guestMatchTimersRef.current = [];
 
     const runMatchmaking = async () => {
@@ -1822,81 +1827,60 @@ export default function DebatePlatformPreview() {
           return;
         }
 
-        setMatchmakingStatus("Searching Supabase rooms...");
+        setMatchmakingStatus("Joining matchmaking queue...");
 
-        const { data: waitingRoom } = await supabase
-          .from("debate_rooms")
-          .select("id, topic, affirmative_user_id")
-          .eq("status", "waiting")
-          .not("affirmative_user_id", "is", null)
-          .neq("affirmative_user_id", user.id)
-          .order("created_at", { ascending: true })
-          .limit(1)
-          .maybeSingle();
+        const joinRes = await fetch("/api/matchmaking/join", { method: "POST" });
+        const joinData = await joinRes.json();
 
-        if (waitingRoom?.id) {
-          const { data: claimed } = await supabase
-            .from("debate_rooms")
-            .update({
-              negative_user_id: user.id,
-              status: "active",
-              started_at: new Date().toISOString(),
-            })
-            .eq("id", waitingRoom.id)
-            .eq("status", "waiting")
-            .is("negative_user_id", null)
-            .select("id, topic")
-            .maybeSingle();
+        if (cancelled) return;
 
-          if (claimed?.id) {
-            if (cancelled) return;
-            setMatchmakingFound(true);
-            setMatchmakingStatus("Match found. Entering arena...");
-            window.setTimeout(() => {
-              if (!cancelled) showArena(claimed.id, claimed.topic || pendingTopic || "Open debate");
-            }, 700);
-            return;
-          }
+        if (joinData.error) {
+          setMatchmakingStatus(joinData.error);
+          return;
         }
 
-        const topic = pendingTopic || "Open debate";
-        const { data: createdRoom } = await supabase
-          .from("debate_rooms")
-          .insert({
-            topic,
-            debate_format: "casual_1v1",
-            affirmative_user_id: user.id,
-            status: "waiting",
-          })
-          .select("id, topic")
-          .single();
+        if (joinData.matched && joinData.room_id) {
+          setMatchmakingFound(true);
+          setMatchmakingStatus("Match found. Entering arena...");
+          window.setTimeout(() => {
+            if (!cancelled) showArena(joinData.room_id, joinData.topic || "Open debate");
+          }, 700);
+          return;
+        }
 
-        if (!createdRoom?.id || cancelled) return;
-        createdWaitingRoomRef.current = createdRoom.id;
-        setMatchmakingStatus("Waiting for opponent...");
+        setMatchmakingStatus(joinData.reason || "Waiting for opponent...");
 
-        matchmakingChannelRef.current = supabase
-          .channel(`matchmaking:${createdRoom.id}`)
-          .on(
-            "postgres_changes",
-            {
-              event: "UPDATE",
-              schema: "public",
-              table: "debate_rooms",
-              filter: `id=eq.${createdRoom.id}`,
-            },
-            (payload) => {
-              const room = payload.new as { id: string; status: string; topic: string };
-              if (room.status === "active") {
-                setMatchmakingFound(true);
-                setMatchmakingStatus("Match found. Entering arena...");
-                window.setTimeout(() => {
-                  if (!cancelled) showArena(room.id, room.topic || topic);
-                }, 700);
-              }
+        const pollStatus = async () => {
+          if (cancelled) return;
+
+          try {
+            const joinAgainRes = await fetch("/api/matchmaking/join", { method: "POST" });
+            const joinAgainData = await joinAgainRes.json();
+
+            if (cancelled) return;
+
+            if (joinAgainData.matched && joinAgainData.room_id) {
+              setMatchmakingFound(true);
+              setMatchmakingStatus("Match found. Entering arena...");
+              window.setTimeout(() => {
+                if (!cancelled) showArena(joinAgainData.room_id, joinAgainData.topic || "Open debate");
+              }, 700);
+              return;
             }
-          )
-          .subscribe();
+
+            if (joinAgainData.reason) {
+              setMatchmakingStatus(joinAgainData.reason);
+            }
+
+            pollTimer = setTimeout(pollStatus, 2500);
+          } catch {
+            if (!cancelled) {
+              pollTimer = setTimeout(pollStatus, 3000);
+            }
+          }
+        };
+
+        pollTimer = setTimeout(pollStatus, 2000);
       } catch {
         setMatchmakingStatus("Matchmaking unavailable. Try again.");
       }
@@ -1905,8 +1889,16 @@ export default function DebatePlatformPreview() {
     void runMatchmaking();
     return () => {
       cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
       guestMatchTimersRef.current.forEach((id) => window.clearTimeout(id));
       guestMatchTimersRef.current = [];
+      void (async () => {
+        try {
+          await fetch("/api/matchmaking/leave", { method: "POST" });
+        } catch {
+          // ignore
+        }
+      })();
       void cleanupMatchmaking();
     };
   }, [view, pendingTopic]);
