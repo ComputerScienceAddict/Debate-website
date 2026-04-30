@@ -1477,6 +1477,8 @@ export default function DebatePlatformPreview() {
   const [activeTopic, setActiveTopic] = useState("");
   /** true while the arena is polling for a match (Omegle "looking for stranger" state) */
   const [isSearching, setIsSearching] = useState(false);
+  /** Each search effect mount bumps this so late async responses cannot flip us to "matched" from an old wave. */
+  const matchmakingWaveRef = useRef(0);
 
   useEffect(() => {
     let mounted = true;
@@ -1614,61 +1616,132 @@ export default function DebatePlatformPreview() {
   useEffect(() => {
     if (view !== "arena" || !isSearching) return;
 
+    const wave = ++matchmakingWaveRef.current;
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const stale = () => cancelled || matchmakingWaveRef.current !== wave;
+
+    const applyMatched = (roomId: string, topic: string) => {
+      if (stale()) return;
+      setIsSearching(false);
+      setActiveRoomId(roomId);
+      setActiveTopic(topic);
+    };
+
+    const schedule = (fn: () => Promise<void>, ms: number) => {
+      if (stale()) return;
+      pollTimer = setTimeout(() => void fn(), ms);
+    };
 
     const run = async () => {
       try {
         const joinRes = await fetch("/api/matchmaking/join", { method: "POST" });
-        const joinData = await joinRes.json();
-        if (cancelled) return;
+        let joinBody: unknown;
+        try {
+          joinBody = await joinRes.json();
+        } catch {
+          joinBody = {};
+        }
+        if (stale()) return;
 
-        if (joinData.matched && joinData.room_id) {
-          setIsSearching(false);
-          setActiveRoomId(joinData.room_id);
-          setActiveTopic(joinData.topic || "Open debate");
+        const jd = joinBody as {
+          matched?: unknown;
+          room_id?: unknown;
+          topic?: unknown;
+          error?: unknown;
+        };
+        const joinFailed =
+          !joinRes.ok ||
+          (typeof jd.error === "string" && jd.error.length > 0);
+
+        if (joinFailed) {
+          schedule(run, 2600);
           return;
         }
 
-        if (joinData.error) return; // surfaced in service error message
+        if (jd.matched === true && typeof jd.room_id === "string") {
+          applyMatched(
+            jd.room_id,
+            typeof jd.topic === "string" ? jd.topic : "Open debate"
+          );
+          return;
+        }
 
         const poll = async () => {
-          if (cancelled) return;
+          if (stale()) return;
           try {
             const statusRes = await fetch("/api/matchmaking/status");
-            const s = await statusRes.json();
-            if (cancelled) return;
+            let statusBody: unknown;
+            try {
+              statusBody = await statusRes.json();
+            } catch {
+              statusBody = {};
+            }
+            if (stale()) return;
 
-            if (s.state === "matched" && s.room_id) {
-              setIsSearching(false);
-              setActiveRoomId(s.room_id);
-              setActiveTopic(s.topic || "Open debate");
+            const sb = statusBody as {
+              state?: unknown;
+              room_id?: unknown;
+              topic?: unknown;
+              error?: unknown;
+            };
+
+            if (!statusRes.ok || typeof sb.error === "string") {
+              schedule(poll, 2200);
               return;
             }
 
-            if (s.state === "idle") {
-              // Re-join if fell out of queue
-              const rejoin = await fetch("/api/matchmaking/join", { method: "POST" });
-              const rj = await rejoin.json();
-              if (cancelled) return;
-              if (rj.matched && rj.room_id) {
-                setIsSearching(false);
-                setActiveRoomId(rj.room_id);
-                setActiveTopic(rj.topic || "Open debate");
+            if (sb.state === "matched" && typeof sb.room_id === "string") {
+              applyMatched(
+                sb.room_id,
+                typeof sb.topic === "string" ? sb.topic : "Open debate"
+              );
+              return;
+            }
+
+            if (sb.state === "idle") {
+              const rejoinRes = await fetch("/api/matchmaking/join", {
+                method: "POST",
+              });
+              let rj: unknown;
+              try {
+                rj = await rejoinRes.json();
+              } catch {
+                rj = {};
+              }
+              if (stale()) return;
+              const rjb = rj as {
+                matched?: unknown;
+                room_id?: unknown;
+                topic?: unknown;
+                error?: unknown;
+              };
+              const rejoinFailed =
+                !rejoinRes.ok ||
+                (typeof rjb.error === "string" && rjb.error.length > 0);
+              if (
+                !rejoinFailed &&
+                rjb.matched === true &&
+                typeof rjb.room_id === "string"
+              ) {
+                applyMatched(
+                  rjb.room_id,
+                  typeof rjb.topic === "string" ? rjb.topic : "Open debate"
+                );
                 return;
               }
             }
 
-            pollTimer = setTimeout(poll, 1800);
+            schedule(poll, 1800);
           } catch {
-            if (!cancelled) pollTimer = setTimeout(poll, 3000);
+            if (!stale()) schedule(poll, 3000);
           }
         };
 
-        pollTimer = setTimeout(poll, 1200);
+        schedule(poll, 1200);
       } catch {
-        // network error — retry
-        if (!cancelled) pollTimer = setTimeout(run, 3000);
+        if (!stale()) schedule(run, 2800);
       }
     };
 

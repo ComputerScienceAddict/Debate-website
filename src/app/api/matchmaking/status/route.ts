@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { fetchValidActiveMatchedRoomOrHeal } from "@/lib/matchmaking/status-helper";
 
 export async function GET() {
   try {
@@ -22,22 +23,14 @@ export async function GET() {
       return NextResponse.json({ error: "Server misconfigured" }, { status: 503 });
     }
 
-    // Check if the user has an active matched room
-    const { data: activeRoom } = await admin
-      .from("debate_rooms")
-      .select("id, topic")
-      .or(`affirmative_user_id.eq.${user.id},negative_user_id.eq.${user.id}`)
-      .eq("status", "active")
-      .not("match_record_id", "is", null)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Only count a match when both participant slots exist (FK set-null can orphan a row).
+    const activeRoom = await fetchValidActiveMatchedRoomOrHeal(admin, user.id);
 
-    if (activeRoom?.id) {
+    if (activeRoom) {
       return NextResponse.json({
         state: "matched" as const,
-        room_id: activeRoom.id as string,
-        topic: (activeRoom.topic as string) || "Open debate",
+        room_id: activeRoom.id,
+        topic: activeRoom.topic || "Open debate",
       });
     }
 

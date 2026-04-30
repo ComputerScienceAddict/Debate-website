@@ -2,6 +2,19 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 const DEBATE_FORMAT = "casual_1v1";
 
+/** Ends every active Omegle-style room row this user participates in (service role). */
+export async function closeActiveDebatesForUser(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string
+): Promise<void> {
+  const endedNow = new Date().toISOString();
+  await admin
+    .from("debate_rooms")
+    .update({ status: "completed", ended_at: endedNow })
+    .or(`affirmative_user_id.eq.${userId},negative_user_id.eq.${userId}`)
+    .eq("status", "active");
+}
+
 function orderedPair(
   a: string,
   b: string
@@ -39,16 +52,10 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
     };
   }
 
-  const endedNow = new Date().toISOString();
-
   // Close any in-progress Omegle room before re-joining the queue (Next / peer left).
   // Client-side updates hit RLS; without this the next GET /matchmaking/status still
   // returns "matched" and the UI never keeps searching.
-  await admin
-    .from("debate_rooms")
-    .update({ status: "completed", ended_at: endedNow })
-    .or(`affirmative_user_id.eq.${userId},negative_user_id.eq.${userId}`)
-    .eq("status", "active");
+  await closeActiveDebatesForUser(admin, userId);
 
   // Try to claim the longest-waiting user (FIFO)
   const { data: candidates } = await admin
