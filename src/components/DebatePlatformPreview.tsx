@@ -970,6 +970,9 @@ function ArenaView({
 
   const [cameraReady, setCameraReady] = useState(false);
   const [webrtcStatus, setWebrtcStatus] = useState("Camera off");
+  /** Local preview / outgoing WebRTC tracks (does not mute local video element echo — that stays muted). */
+  const [micEnabled, setMicEnabled] = useState(true);
+  const [videoEnabled, setVideoEnabled] = useState(true);
 
   /** Sync auth / guest ids for teardown (React state batches too late for bye/presence). */
   const myUserIdRef = useRef("");
@@ -989,6 +992,20 @@ function ArenaView({
   const signalsRef = useRef<BroadcastSignaling | null>(null);
   /** Stable ref so ICE/offer closures always see the latest remote peer ID. */
   const remoteUserIdRef = useRef<string | null>(null);
+
+  function applyLocalVideoEnabled(on: boolean) {
+    localStreamRef.current?.getVideoTracks().forEach((t) => {
+      t.enabled = on;
+    });
+    setVideoEnabled(on);
+  }
+
+  function applyLocalMicEnabled(on: boolean) {
+    localStreamRef.current?.getAudioTracks().forEach((t) => {
+      t.enabled = on;
+    });
+    setMicEnabled(on);
+  }
 
   function goToNextStranger() {
     void shutdownWebRtc();
@@ -1055,6 +1072,8 @@ function ArenaView({
       };
 
       setCameraReady(true);
+      setMicEnabled(true);
+      setVideoEnabled(true);
       setWebrtcStatus("Connecting…");
 
       // --- Broadcast-based signaling (no replication needed) ---
@@ -1239,6 +1258,8 @@ function ArenaView({
       if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
       remoteUserIdRef.current = null;
       setCameraReady(false);
+      setMicEnabled(true);
+      setVideoEnabled(true);
       setWebrtcStatus("Camera off");
     } finally {
       webrtcClosingRef.current = false;
@@ -1403,9 +1424,39 @@ function ArenaView({
                 </span>
               </div>
             ) : (
-              <span className="absolute left-2 top-2 z-10 rounded bg-black/45 px-2 py-0.5 text-[10px] font-semibold text-white">
-                {webrtcStatus}
-              </span>
+              <>
+                <span className="absolute left-2 top-2 z-10 rounded bg-black/45 px-2 py-0.5 text-[10px] font-semibold text-white">
+                  {webrtcStatus}
+                </span>
+                <div className="absolute bottom-10 left-2 z-20 flex max-w-[calc(100%-1rem)] flex-wrap gap-1 min-[520px]:bottom-11">
+                  <button
+                    type="button"
+                    onClick={() => applyLocalVideoEnabled(!videoEnabled)}
+                    aria-label={videoEnabled ? "Turn camera off" : "Turn camera on"}
+                    aria-pressed={videoEnabled}
+                    className={
+                      videoEnabled
+                        ? "rounded border border-emerald-600/90 bg-black/55 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-white shadow-sm hover:bg-black/70 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
+                        : "rounded border border-red-500/90 bg-red-950/65 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-red-50 shadow-sm hover:bg-red-950/85 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
+                    }
+                  >
+                    Camera {videoEnabled ? "on" : "off"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyLocalMicEnabled(!micEnabled)}
+                    aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
+                    aria-pressed={micEnabled}
+                    className={
+                      micEnabled
+                        ? "rounded border border-emerald-600/90 bg-black/55 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-white shadow-sm hover:bg-black/70 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
+                        : "rounded border border-red-500/90 bg-red-950/65 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-red-50 shadow-sm hover:bg-red-950/85 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
+                    }
+                  >
+                    Mic {micEnabled ? "on" : "off"}
+                  </button>
+                </div>
+              </>
             )}
             <div className="pointer-events-none absolute inset-0 bg-black/10" aria-hidden>
             </div>
