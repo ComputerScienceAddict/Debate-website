@@ -935,7 +935,9 @@ type ArenaLogEntry =
   | { type: "spacer" }
   | { type: "stranger" | "you" | "ai"; text: string };
 
-const DEFAULT_ARENA_LOG: ArenaLogEntry[] = [];
+const DEFAULT_ARENA_LOG: ArenaLogEntry[] = [
+  { type: "system", text: "Looking for someone to debate with…" },
+];
 
 function ArenaView({
   onLeave,
@@ -999,7 +1001,7 @@ function ArenaView({
   function goToNextStranger() {
     void shutdownWebRtc();
     setMessage("");
-    setLog([...DEFAULT_ARENA_LOG]);
+    setLog([{ type: "system", text: "Looking for a new stranger…" }]);
     remoteUserIdRef.current = null;
     onNextStranger(roomId);
   }
@@ -1124,7 +1126,9 @@ function ArenaView({
         .on("bye", (payload) => {
           const target = payload.target as string | undefined;
           if (target && target !== userId) return;
-          setWebrtcStatus("Peer disconnected");
+          // Stranger left — auto-search for someone new (Omegle-style)
+          setLog((l) => [...l, { type: "system", text: "Stranger has disconnected." }]);
+          goToNextStranger();
         })
         .subscribe(() => {
           // Announce presence; whoever subscribes second triggers the handshake
@@ -1141,6 +1145,18 @@ function ArenaView({
         });
       };
 
+      // Detect WebRTC disconnection (stranger closed browser, network dropped, etc.)
+      peer.oniceconnectionstatechange = () => {
+        const state = peer.iceConnectionState;
+        if (state === "disconnected" || state === "failed" || state === "closed") {
+          if (remoteUserIdRef.current) {
+            // We had a peer and they dropped — auto-search for someone new
+            setLog((l) => [...l, { type: "system", text: "Stranger has disconnected." }]);
+            goToNextStranger();
+          }
+        }
+      };
+
       signalsRef.current = bc;
 
       // Track presence so room can show who's online
@@ -1154,6 +1170,10 @@ function ArenaView({
   }
 
   async function shutdownWebRtc() {
+    // Send "bye" so stranger knows we left and can auto-search
+    if (signalsRef.current && remoteUserIdRef.current) {
+      signalsRef.current.send("bye", { target: remoteUserIdRef.current, sender: myUserId });
+    }
     if (signalsRef.current) {
       await signalsRef.current.destroy();
       signalsRef.current = null;
@@ -1618,12 +1638,13 @@ export default function DebatePlatformPreview() {
       if (room?.id) {
         setActiveRoomId(room.id);
         setActiveTopic(room.topic);
+        setIsSearching(false);
       } else {
         setActiveRoomId("");
         setActiveTopic("");
+        // Auto-start searching (Omegle-style: clicking "Start" immediately searches)
+        setIsSearching(true);
       }
-      // Always enter arena idle — user clicks "Find Stranger" to begin matching
-      setIsSearching(false);
       setTransitioning(true);
       window.setTimeout(() => {
         setView("arena");
