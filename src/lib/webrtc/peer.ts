@@ -9,11 +9,17 @@ export async function attachLocalMedia(
   localVideo: HTMLVideoElement
 ) {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: true,
+    video: { facingMode: "user" },
     audio: true,
   });
 
+  // iOS Safari requires muted + playsInline set in JS (HTML attrs alone aren't enough
+  // for dynamically assigned srcObject) and needs an explicit play() call.
+  localVideo.muted = true;
+  localVideo.playsInline = true;
   localVideo.srcObject = stream;
+  try { await localVideo.play(); } catch { /* autoplay blocked — user gesture will trigger */ }
+
   stream.getTracks().forEach((track) => {
     peerConnection.addTrack(track, stream);
   });

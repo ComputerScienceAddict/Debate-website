@@ -1017,7 +1017,10 @@ function ArenaView({
         const incoming = event.streams[0];
         if (!incoming || !remoteVideoRef.current) return;
         if (localStreamRef.current && incoming.id === localStreamRef.current.id) return;
-        remoteVideoRef.current.srcObject = incoming;
+        const rv = remoteVideoRef.current;
+        rv.playsInline = true;
+        rv.srcObject = incoming;
+        void rv.play().catch(() => {});
         setWebrtcStatus("Connected");
       };
 
