@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import React, { useEffect, useRef, useState } from "react";
-import type { LiveCheckResponse, FinalScoreResponse, RefereeEvent } from "@/lib/referee/types";
+import type { LiveCheckResponse, RefereeEvent } from "@/lib/referee/types";
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
 import {
   createDebatePeerConnection,
@@ -983,7 +983,6 @@ function ArenaView({
     prevRoomIdRef.current = roomId;
   }, [roomId, searching]);
 
-  const [scoring, setScoring] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [webrtcStatus, setWebrtcStatus] = useState("Camera off");
   const [myUserId, setMyUserId] = useState("");
@@ -1252,59 +1251,9 @@ function ArenaView({
     setSending(false);
   }
 
-  async function endDebate() {
-    if (scoring) return;
-    if (!topic || !roomId) {
-      setLog((current) => [...current, { type: "system", text: "Missing room metadata. Start from a live room first." }]);
-      return;
-    }
-    setScoring(true);
-
-    setLog((current) => [...current, { type: "system", text: "Requesting final score from AI referee..." }]);
-
-    const affirmative = log
-      .filter((e) => e.type === "you")
-      .map((e) => (e as { text: string }).text)
-      .join("\n\n");
-    const negative = log
-      .filter((e) => e.type === "stranger")
-      .map((e) => (e as { text: string }).text)
-      .join("\n\n");
-
-    try {
-      const res = await fetch("/api/referee/final-score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          room_id: roomId,
-          topic,
-          affirmative_transcript: affirmative,
-          negative_transcript: negative,
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        setLog((current) => [
-          ...current,
-          { type: "system", text: `Scoring failed: ${err.error || "Unknown error"}` },
-        ]);
-      } else {
-        const data: FinalScoreResponse = await res.json();
-        const r = data.result;
-        setLog((current) => [
-          ...current,
-          { type: "spacer" },
-          { type: "system", text: `Final verdict: ${r.winner_recommendation.toUpperCase()} (confidence ${Math.round(r.confidence * 100)}%)` },
-          { type: "ai", text: `You: ${r.affirmative.total} pts | Stranger: ${r.negative.total} pts` },
-          { type: "ai", text: r.summary },
-        ]);
-      }
-    } catch {
-      setLog((current) => [...current, { type: "system", text: "Failed to reach AI referee." }]);
-    }
-
-    setScoring(false);
+  function leaveArenaHome() {
+    void shutdownWebRtc();
+    onLeave();
   }
 
   function OmegleLogLine({ item, index }: { item: ArenaLogEntry; index: number }) {
@@ -1428,26 +1377,13 @@ function ArenaView({
               )}
             </span>
             {!searching && !!roomId && (
-              <div className="flex items-center gap-3 self-start min-[420px]:self-auto">
-                <button
-                  type="button"
-                  onClick={endDebate}
-                  disabled={scoring}
-                  className="border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-orange-700 underline decoration-orange-400 underline-offset-2 hover:border-orange-400 hover:bg-orange-100/80 disabled:opacity-50"
-                >
-                  {scoring ? "Scoring..." : "End Debate"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void shutdownWebRtc();
-                    onLeave();
-                  }}
-                  className="border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-600 underline decoration-zinc-400 underline-offset-2 hover:border-zinc-400 hover:bg-zinc-200/80 hover:text-red-700"
-                >
-                  Disconnect
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={leaveArenaHome}
+                className="self-start border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-500 underline decoration-zinc-400 underline-offset-2 hover:border-zinc-400 hover:bg-zinc-200/80 hover:text-zinc-800 min-[420px]:self-auto"
+              >
+                Leave arena
+              </button>
             )}
           </div>
 
