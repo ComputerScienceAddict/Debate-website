@@ -6,8 +6,8 @@ import React, { useEffect, useRef, useState } from "react";
 import type { LiveCheckResponse, RefereeEvent } from "@/lib/referee/types";
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
 import {
+  attachLocalMedia as attachLocalMediaBase,
   createDebatePeerConnection,
-  attachLocalMedia,
   stopMediaStream,
 } from "@/lib/webrtc/peer";
 import {
@@ -15,6 +15,12 @@ import {
   upsertPresence,
   type BroadcastSignaling,
 } from "@/lib/webrtc/signaling";
+import { isWebrtcCaller } from "@/lib/webrtc/caller-selection";
+import {
+  ICE_DISCONNECT_HOLD_MS,
+  isIceDisconnectedProvisional,
+  isIceTerminated,
+} from "@/lib/webrtc/ice-policy";
 
 type LogoMarkProps = {
   spinning?: boolean;
@@ -116,37 +122,6 @@ function StartSessionButton({
     >
       {label}
     </button>
-  );
-}
-
-function ArenaGlyph() {
-  return (
-    <span className="relative flex h-5 w-5 items-center justify-center rounded-md border border-white/25">
-      <span className="absolute h-3 w-3 rounded-sm border border-white/70" />
-      <span className="absolute h-3 w-3 rotate-45 rounded-sm border border-white/35" />
-    </span>
-  );
-}
-
-function BoltGlyph() {
-  return (
-    <span className="text-[15px] leading-none text-[#ff4d00] transition-transform duration-300 group-hover:rotate-12 group-hover:scale-110">
-      ↯
-    </span>
-  );
-}
-
-function FlagGlyph() {
-  return <span className="text-[13px] text-zinc-400">⚑</span>;
-}
-
-function ArrowGlyph({ tone = "light" }: { tone?: "light" | "dark" }) {
-  return (
-    <span
-      className={`ml-2 text-[16px] leading-none transition-transform duration-300 group-hover:translate-x-0.5 ${tone === "dark" ? "text-zinc-500" : "text-white/70"}`}
-    >
-      →
-    </span>
   );
 }
 
@@ -989,13 +964,23 @@ function ArenaView({
       return () => clearTimeout(t);
     }
     prevRoomIdRef.current = roomId;
+    // Intentional: do not depend on startCameraAndSync (new identity every render would re-arm camera).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, searching]);
 
   const [cameraReady, setCameraReady] = useState(false);
   const [webrtcStatus, setWebrtcStatus] = useState("Camera off");
-  const [myUserId, setMyUserId] = useState("");
-  const [remoteUserId, setRemoteUserId] = useState<string | null>(null);
-  const [guestMode, setGuestMode] = useState(false);
+
+  /** Sync auth / guest ids for teardown (React state batches too late for bye/presence). */
+  const myUserIdRef = useRef("");
+  const guestModeRef = useRef(false);
+  const syncInFlightRef = useRef(false);
+  /** Suppress ICE handler reacting to intentional peer.close() / teardown */
+  const webrtcClosingRef = useRef(false);
+  /** `disconnected` can recover — only treat as bye after ICE_DISCONNECT_HOLD_MS */
+  const iceDisconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Avoid bye + ICE both calling goToNextStranger */
+  const peerLeaveHandledRef = useRef(false);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -1014,6 +999,7 @@ function ArenaView({
 
   async function startCameraAndSync() {
     if (cameraReady) return;
+    if (peerRef.current !== null || syncInFlightRef.current) return;
     if (!roomId) {
       setWebrtcStatus("No room yet — find a stranger first");
       return;
@@ -1023,6 +1009,9 @@ function ArenaView({
       return;
     }
 
+    syncInFlightRef.current = true;
+    peerLeaveHandledRef.current = false;
+
     try {
       const supabase = createSupabaseClient();
       const { data, error } = await supabase.auth.getUser();
@@ -1030,17 +1019,27 @@ function ArenaView({
         !error && data.user
           ? data.user.id
           : `guest_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`;
-      setMyUserId(userId);
-      setGuestMode(!data.user);
+      myUserIdRef.current = userId;
+      guestModeRef.current = !data.user;
 
       const peer = createDebatePeerConnection();
       peerRef.current = peer;
-      localStreamRef.current = await attachLocalMedia(peer, localVideoRef.current);
+      try {
+        localStreamRef.current = await attachLocalMediaBase(
+          peer,
+          localVideoRef.current
+        );
+      } catch (mediaErr) {
+        peer.close();
+        peerRef.current = null;
+        throw mediaErr;
+      }
 
       peer.ontrack = (event) => {
         const incoming = event.streams[0];
         if (!incoming || !remoteVideoRef.current) return;
-        if (localStreamRef.current && incoming.id === localStreamRef.current.id) return;
+        if (localStreamRef.current && incoming.id === localStreamRef.current.id)
+          return;
         const rv = remoteVideoRef.current;
         rv.muted = false;
         rv.playsInline = true;
@@ -1063,6 +1062,16 @@ function ArenaView({
 
       const bc = createBroadcastSignaling(roomId);
 
+      const schedulePeerLeft = () => {
+        if (peerLeaveHandledRef.current || webrtcClosingRef.current) return;
+        peerLeaveHandledRef.current = true;
+        setLog((l) => [
+          ...l,
+          { type: "system", text: "Stranger has disconnected." },
+        ]);
+        goToNextStranger();
+      };
+
       const sendOffer = async (peerId: string) => {
         if (offerSent) return;
         offerSent = true;
@@ -1077,31 +1086,25 @@ function ArenaView({
           const peerId = payload.sender as string;
           if (!peerId || peerId === userId) return;
           remoteUserIdRef.current = peerId;
-          setRemoteUserId(peerId);
-          if (userId < peerId) {
-            // I'm the caller — send offer
+          if (isWebrtcCaller(userId, peerId)) {
             void sendOffer(peerId);
           } else {
-            // I'm not the caller — ack so caller knows I'm subscribed
             bc.send("ack", { target: peerId, sender: userId });
           }
         })
         .on("ack", (payload) => {
-          // Caller may have sent hello before non-caller subscribed; ack triggers offer
           const peerId = payload.sender as string;
           if (!peerId || peerId === userId) return;
           const target = payload.target as string | undefined;
           if (target && target !== userId) return;
           remoteUserIdRef.current = peerId;
-          setRemoteUserId(peerId);
-          if (userId < peerId) void sendOffer(peerId);
+          if (isWebrtcCaller(userId, peerId)) void sendOffer(peerId);
         })
         .on("offer", async (payload) => {
           const target = payload.target as string | undefined;
           if (target && target !== userId) return;
           const peerId = payload.sender as string;
           remoteUserIdRef.current = peerId;
-          setRemoteUserId(peerId);
           await peer.setRemoteDescription(
             new RTCSessionDescription(payload.sdp as RTCSessionDescriptionInit)
           );
@@ -1132,16 +1135,12 @@ function ArenaView({
         .on("bye", (payload) => {
           const target = payload.target as string | undefined;
           if (target && target !== userId) return;
-          // Stranger left — auto-search for someone new (Omegle-style)
-          setLog((l) => [...l, { type: "system", text: "Stranger has disconnected." }]);
-          goToNextStranger();
+          schedulePeerLeft();
         })
         .subscribe(() => {
-          // Announce presence; whoever subscribes second triggers the handshake
           bc.send("hello", { sender: userId });
         });
 
-      // ICE candidates via broadcast (fast, no DB round-trip)
       peer.onicecandidate = (event) => {
         if (!event.candidate) return;
         bc.send("ice", {
@@ -1151,55 +1150,99 @@ function ArenaView({
         });
       };
 
-      // Detect WebRTC disconnection (stranger closed browser, network dropped, etc.)
       peer.oniceconnectionstatechange = () => {
+        if (webrtcClosingRef.current) return;
+
         const state = peer.iceConnectionState;
-        if (state === "disconnected" || state === "failed" || state === "closed") {
-          if (remoteUserIdRef.current) {
-            // We had a peer and they dropped — auto-search for someone new
-            setLog((l) => [...l, { type: "system", text: "Stranger has disconnected." }]);
-            goToNextStranger();
+
+        if (state === "connected" || state === "completed") {
+          if (iceDisconnectTimerRef.current !== null) {
+            clearTimeout(iceDisconnectTimerRef.current);
+            iceDisconnectTimerRef.current = null;
           }
+          return;
+        }
+
+        if (isIceTerminated(state)) {
+          if (iceDisconnectTimerRef.current !== null) {
+            clearTimeout(iceDisconnectTimerRef.current);
+            iceDisconnectTimerRef.current = null;
+          }
+          if (remoteUserIdRef.current) schedulePeerLeft();
+          return;
+        }
+
+        if (isIceDisconnectedProvisional(state)) {
+          if (iceDisconnectTimerRef.current !== null) {
+            clearTimeout(iceDisconnectTimerRef.current);
+          }
+          iceDisconnectTimerRef.current = setTimeout(() => {
+            iceDisconnectTimerRef.current = null;
+            if (
+              webrtcClosingRef.current ||
+              peerRef.current?.iceConnectionState !== "disconnected"
+            ) {
+              return;
+            }
+            if (remoteUserIdRef.current) schedulePeerLeft();
+          }, ICE_DISCONNECT_HOLD_MS);
         }
       };
 
       signalsRef.current = bc;
 
-      // Track presence so room can show who's online
       if (data.user) {
         void upsertPresence({ roomId, userId, role: "affirmative", isOnline: true });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setWebrtcStatus(`Failed to start camera: ${msg}`);
+    } finally {
+      syncInFlightRef.current = false;
     }
   }
 
   async function shutdownWebRtc() {
-    // Send "bye" so stranger knows we left and can auto-search
-    if (signalsRef.current && remoteUserIdRef.current) {
-      signalsRef.current.send("bye", { target: remoteUserIdRef.current, sender: myUserId });
+    webrtcClosingRef.current = true;
+    if (iceDisconnectTimerRef.current !== null) {
+      clearTimeout(iceDisconnectTimerRef.current);
+      iceDisconnectTimerRef.current = null;
     }
-    if (signalsRef.current) {
-      await signalsRef.current.destroy();
-      signalsRef.current = null;
+    try {
+      if (signalsRef.current && remoteUserIdRef.current) {
+        signalsRef.current.send("bye", {
+          target: remoteUserIdRef.current,
+          sender: myUserIdRef.current,
+        });
+      }
+      if (signalsRef.current) {
+        await signalsRef.current.destroy();
+        signalsRef.current = null;
+      }
+      if (myUserIdRef.current && roomId && !guestModeRef.current) {
+        try {
+          await upsertPresence({
+            roomId,
+            userId: myUserIdRef.current,
+            role: "affirmative",
+            isOnline: false,
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+      peerRef.current?.close();
+      peerRef.current = null;
+      stopMediaStream(localStreamRef.current);
+      localStreamRef.current = null;
+      if (localVideoRef.current) localVideoRef.current.srcObject = null;
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+      remoteUserIdRef.current = null;
+      setCameraReady(false);
+      setWebrtcStatus("Camera off");
+    } finally {
+      webrtcClosingRef.current = false;
     }
-    if (myUserId && roomId && !guestMode) {
-      try {
-        await upsertPresence({ roomId, userId: myUserId, role: "affirmative", isOnline: false });
-      } catch { /* ignore */ }
-    }
-    peerRef.current?.close();
-    peerRef.current = null;
-    stopMediaStream(localStreamRef.current);
-    localStreamRef.current = null;
-    if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-    remoteUserIdRef.current = null;
-    setCameraReady(false);
-    setWebrtcStatus("Camera off");
-    setRemoteUserId(null);
-    setGuestMode(false);
   }
 
   async function callLiveCheck(text: string): Promise<RefereeEvent[]> {
@@ -1226,6 +1269,10 @@ function ArenaView({
 
   useEffect(() => {
     return () => {
+      if (iceDisconnectTimerRef.current !== null) {
+        clearTimeout(iceDisconnectTimerRef.current);
+        iceDisconnectTimerRef.current = null;
+      }
       if (signalsRef.current) {
         void signalsRef.current.destroy();
         signalsRef.current = null;
