@@ -7,6 +7,7 @@ import type { LiveCheckResponse, RefereeEvent } from "@/lib/referee/types";
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
 import {
   attachLocalMedia as attachLocalMediaBase,
+  bindLocalPreviewVideo,
   createDebatePeerConnection,
   stopMediaStream,
 } from "@/lib/webrtc/peer";
@@ -985,6 +986,9 @@ function ArenaView({
   /** Avoid bye + ICE both calling goToNextStranger */
   const peerLeaveHandledRef = useRef(false);
 
+  /** True while attaching preview-only camera (before WebRTC peer exists). */
+  const previewInFlightRef = useRef(false);
+
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -1014,8 +1018,49 @@ function ArenaView({
     onNextStranger();
   }
 
+  async function startLocalPreview() {
+    if (previewInFlightRef.current || peerRef.current || syncInFlightRef.current)
+      return;
+    if (localStreamRef.current) return;
+    if (!localVideoRef.current) {
+      setWebrtcStatus("Video elements not ready");
+      return;
+    }
+
+    previewInFlightRef.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: true,
+      });
+      bindLocalPreviewVideo(stream, localVideoRef.current);
+      localStreamRef.current = stream;
+      const at = stream.getAudioTracks()[0];
+      const vt = stream.getVideoTracks()[0];
+      setMicEnabled(at?.enabled ?? true);
+      setVideoEnabled(vt?.enabled ?? true);
+      setCameraReady(true);
+      setWebrtcStatus("Preview — find a stranger whenever you're ready");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setWebrtcStatus(`Couldn't access camera/mic: ${msg}`);
+    } finally {
+      previewInFlightRef.current = false;
+    }
+  }
+
+  function stopLocalPreview() {
+    if (peerRef.current) return;
+    stopMediaStream(localStreamRef.current);
+    localStreamRef.current = null;
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    setCameraReady(false);
+    setMicEnabled(true);
+    setVideoEnabled(true);
+    setWebrtcStatus("Camera off");
+  }
+
   async function startCameraAndSync() {
-    if (cameraReady) return;
     if (peerRef.current !== null || syncInFlightRef.current) return;
     if (!roomId) {
       setWebrtcStatus("No room yet — find a stranger first");
@@ -1041,11 +1086,22 @@ function ArenaView({
 
       const peer = createDebatePeerConnection();
       peerRef.current = peer;
+
       try {
-        localStreamRef.current = await attachLocalMediaBase(
-          peer,
-          localVideoRef.current
-        );
+        const existing = localStreamRef.current;
+        if (existing) {
+          existing.getTracks().forEach((track) =>
+            peer.addTrack(track, existing)
+          );
+        } else {
+          localStreamRef.current = await attachLocalMediaBase(
+            peer,
+            localVideoRef.current
+          );
+          setMicEnabled(true);
+          setVideoEnabled(true);
+          setCameraReady(true);
+        }
       } catch (mediaErr) {
         peer.close();
         peerRef.current = null;
@@ -1071,9 +1127,6 @@ function ArenaView({
         setWebrtcStatus("Connected");
       };
 
-      setCameraReady(true);
-      setMicEnabled(true);
-      setVideoEnabled(true);
       setWebrtcStatus("Connecting…");
 
       // --- Broadcast-based signaling (no replication needed) ---
@@ -1414,10 +1467,10 @@ function ArenaView({
               <div className="relative z-10 flex flex-col items-center">
                 <button
                   type="button"
-                  onClick={() => void startCameraAndSync()}
+                  onClick={() => void startLocalPreview()}
                   className="rounded-md border border-zinc-500 bg-white/85 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-700"
                 >
-                  Turn Camera On
+                  Turn camera / mic on
                 </button>
                 <span className="mt-2 text-[9px] font-bold uppercase tracking-widest text-zinc-600 min-[480px]:text-[10px]">
                   {webrtcStatus}
@@ -1428,33 +1481,44 @@ function ArenaView({
                 <span className="absolute left-2 top-2 z-10 rounded bg-black/45 px-2 py-0.5 text-[10px] font-semibold text-white">
                   {webrtcStatus}
                 </span>
-                <div className="absolute bottom-10 left-2 z-20 flex max-w-[calc(100%-1rem)] flex-wrap gap-1 min-[520px]:bottom-11">
-                  <button
-                    type="button"
-                    onClick={() => applyLocalVideoEnabled(!videoEnabled)}
-                    aria-label={videoEnabled ? "Turn camera off" : "Turn camera on"}
-                    aria-pressed={videoEnabled}
-                    className={
-                      videoEnabled
-                        ? "rounded border border-emerald-600/90 bg-black/55 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-white shadow-sm hover:bg-black/70 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
-                        : "rounded border border-red-500/90 bg-red-950/65 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-red-50 shadow-sm hover:bg-red-950/85 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
-                    }
-                  >
-                    Camera {videoEnabled ? "on" : "off"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyLocalMicEnabled(!micEnabled)}
-                    aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
-                    aria-pressed={micEnabled}
-                    className={
-                      micEnabled
-                        ? "rounded border border-emerald-600/90 bg-black/55 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-white shadow-sm hover:bg-black/70 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
-                        : "rounded border border-red-500/90 bg-red-950/65 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-red-50 shadow-sm hover:bg-red-950/85 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
-                    }
-                  >
-                    Mic {micEnabled ? "on" : "off"}
-                  </button>
+                <div className="absolute bottom-10 left-2 z-20 flex max-w-[calc(100%-1rem)] flex-col gap-1 min-[520px]:bottom-11">
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => applyLocalVideoEnabled(!videoEnabled)}
+                      aria-label={videoEnabled ? "Turn camera off" : "Turn camera on"}
+                      aria-pressed={videoEnabled}
+                      className={
+                        videoEnabled
+                          ? "rounded border border-emerald-600/90 bg-black/55 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-white shadow-sm hover:bg-black/70 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
+                          : "rounded border border-red-500/90 bg-red-950/65 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-red-50 shadow-sm hover:bg-red-950/85 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
+                      }
+                    >
+                      Camera {videoEnabled ? "on" : "off"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyLocalMicEnabled(!micEnabled)}
+                      aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"}
+                      aria-pressed={micEnabled}
+                      className={
+                        micEnabled
+                          ? "rounded border border-emerald-600/90 bg-black/55 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-white shadow-sm hover:bg-black/70 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
+                          : "rounded border border-red-500/90 bg-red-950/65 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-red-50 shadow-sm hover:bg-red-950/85 active:translate-y-px min-[480px]:px-2.5 min-[480px]:text-[10px]"
+                      }
+                    >
+                      Mic {micEnabled ? "on" : "off"}
+                    </button>
+                  </div>
+                  {!roomId ? (
+                    <button
+                      type="button"
+                      onClick={() => stopLocalPreview()}
+                      className="w-fit rounded border border-zinc-600 bg-black/45 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-white hover:bg-black/65 min-[480px]:text-[10px]"
+                    >
+                      Stop preview
+                    </button>
+                  ) : null}
                 </div>
               </>
             )}

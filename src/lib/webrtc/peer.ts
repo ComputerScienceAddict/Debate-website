@@ -4,6 +4,19 @@ export function createDebatePeerConnection() {
   });
 }
 
+export function bindLocalPreviewVideo(stream: MediaStream, localVideo: HTMLVideoElement) {
+  localVideo.muted = true;
+  localVideo.playsInline = true;
+  localVideo.autoplay = true;
+  localVideo.setAttribute("playsinline", "");
+  localVideo.setAttribute("webkit-playsinline", "");
+  localVideo.srcObject = stream;
+  const tryPlay = () => localVideo.play().catch(() => {});
+  void tryPlay();
+  setTimeout(tryPlay, 50);
+  setTimeout(tryPlay, 200);
+}
+
 export async function attachLocalMedia(
   peerConnection: RTCPeerConnection,
   localVideo: HTMLVideoElement
@@ -13,20 +26,7 @@ export async function attachLocalMedia(
     audio: true,
   });
 
-  // iOS Safari requires muted + playsInline set in JS (HTML attrs alone aren't enough
-  // for dynamically assigned srcObject) and needs an explicit play() call.
-  localVideo.muted = true;
-  localVideo.playsInline = true;
-  localVideo.autoplay = true;
-  localVideo.setAttribute("playsinline", ""); // Belt-and-suspenders for older iOS
-  localVideo.setAttribute("webkit-playsinline", "");
-  localVideo.srcObject = stream;
-
-  // Robust play: try immediately, then retry after a tick if iOS deferred it
-  const tryPlay = () => localVideo.play().catch(() => {});
-  await tryPlay();
-  setTimeout(tryPlay, 50);
-  setTimeout(tryPlay, 200);
+  bindLocalPreviewVideo(stream, localVideo);
 
   stream.getTracks().forEach((track) => {
     peerConnection.addTrack(track, stream);
