@@ -39,26 +39,15 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
     };
   }
 
-  // Already matched? Return the active room.
-  const { data: existingRoom } = await admin
+  // Clean up any stale "active" rooms for this user (older than 30 min)
+  // — these are leftover from sessions that weren't properly closed.
+  const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  await admin
     .from("debate_rooms")
-    .select("id, topic")
+    .update({ status: "completed", ended_at: new Date().toISOString() })
     .or(`affirmative_user_id.eq.${userId},negative_user_id.eq.${userId}`)
     .eq("status", "active")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (existingRoom?.id) {
-    await admin.from("matchmaking_queue").delete().eq("user_id", userId);
-    return {
-      matched: true,
-      room_id: existingRoom.id as string,
-      match_record_id: "",
-      topic: (existingRoom.topic as string) || "Open debate",
-      disagreement_score: 0,
-    };
-  }
+    .lt("created_at", thirtyMinAgo);
 
   // Try to claim the longest-waiting user (FIFO)
   const { data: candidates } = await admin

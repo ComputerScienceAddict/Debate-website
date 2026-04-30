@@ -956,6 +956,7 @@ function ArenaView({
   const [log, setLog] = useState<ArenaLogEntry[]>(() => [...DEFAULT_ARENA_LOG]);
   const [sending, setSending] = useState(false);
   const prevSearchingRef = useRef(searching);
+  const prevRoomIdRef = useRef(roomId);
   useEffect(() => {
     if (prevSearchingRef.current && !searching && topic) {
       setLog((l) => [
@@ -965,6 +966,21 @@ function ArenaView({
     }
     prevSearchingRef.current = searching;
   }, [searching, topic]);
+
+  // Auto-start camera when matched (roomId changes from empty to valid)
+  useEffect(() => {
+    if (!prevRoomIdRef.current && roomId && !searching) {
+      // Small delay to let video refs mount
+      const t = setTimeout(() => {
+        if (localVideoRef.current && remoteVideoRef.current) {
+          void startCameraAndSync();
+        }
+      }, 100);
+      return () => clearTimeout(t);
+    }
+    prevRoomIdRef.current = roomId;
+  }, [roomId, searching]);
+
   const [scoring, setScoring] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [webrtcStatus, setWebrtcStatus] = useState("Camera off");
@@ -1018,9 +1034,16 @@ function ArenaView({
         if (!incoming || !remoteVideoRef.current) return;
         if (localStreamRef.current && incoming.id === localStreamRef.current.id) return;
         const rv = remoteVideoRef.current;
+        rv.muted = false;
         rv.playsInline = true;
+        rv.autoplay = true;
+        rv.setAttribute("playsinline", "");
+        rv.setAttribute("webkit-playsinline", "");
         rv.srcObject = incoming;
-        void rv.play().catch(() => {});
+        const tryPlay = () => rv.play().catch(() => {});
+        void tryPlay();
+        setTimeout(tryPlay, 50);
+        setTimeout(tryPlay, 200);
         setWebrtcStatus("Connected");
       };
 

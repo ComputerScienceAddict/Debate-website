@@ -17,8 +17,16 @@ export async function attachLocalMedia(
   // for dynamically assigned srcObject) and needs an explicit play() call.
   localVideo.muted = true;
   localVideo.playsInline = true;
+  localVideo.autoplay = true;
+  localVideo.setAttribute("playsinline", ""); // Belt-and-suspenders for older iOS
+  localVideo.setAttribute("webkit-playsinline", "");
   localVideo.srcObject = stream;
-  try { await localVideo.play(); } catch { /* autoplay blocked — user gesture will trigger */ }
+
+  // Robust play: try immediately, then retry after a tick if iOS deferred it
+  const tryPlay = () => localVideo.play().catch(() => {});
+  await tryPlay();
+  setTimeout(tryPlay, 50);
+  setTimeout(tryPlay, 200);
 
   stream.getTracks().forEach((track) => {
     peerConnection.addTrack(track, stream);
