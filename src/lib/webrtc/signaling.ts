@@ -2,6 +2,72 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import type { SignalPayload, SignalType, WebRtcSignalRow } from "./types";
 
+/**
+ * Broadcast-based WebRTC signaling — no Supabase Realtime replication required.
+ * Messages go directly over the WebSocket (ephemeral, not persisted in the DB).
+ *
+ * Protocol:
+ *   hello  → peer announces presence; lower userId becomes "caller" and sends offer
+ *   ack    → non-caller confirms they're ready (triggers caller if hello was missed)
+ *   offer  → WebRTC offer SDP  (targeted)
+ *   answer → WebRTC answer SDP (targeted)
+ *   ice    → ICE candidate      (targeted)
+ *   bye    → peer is leaving
+ *
+ * Usage:
+ *   const bc = createBroadcastSignaling(roomId);
+ *   bc.on("hello", handler).on("offer", handler)...;
+ *   bc.subscribe(() => bc.send("hello", {}));
+ *   // later: bc.send("offer", { sdp, target: peerId });
+ *   // cleanup: await bc.destroy();
+ */
+export interface BroadcastSignaling {
+  on(event: string, handler: (payload: Record<string, unknown>) => void): BroadcastSignaling;
+  subscribe(onReady?: () => void): BroadcastSignaling;
+  send(event: string, payload?: Record<string, unknown>): void;
+  destroy(): Promise<void>;
+}
+
+export function createBroadcastSignaling(roomId: string): BroadcastSignaling {
+  const supabase = createClient();
+  const channel: RealtimeChannel = supabase.channel(`debate-rtc:${roomId}`, {
+    config: { broadcast: { self: false, ack: false } },
+  });
+
+  const handlers = new Map<string, (p: Record<string, unknown>) => void>();
+  let subscribed = false;
+
+  for (const evt of ["hello", "ack", "offer", "answer", "ice", "bye"]) {
+    channel.on("broadcast", { event: evt }, ({ payload }) => {
+      handlers.get(evt)?.(((payload ?? {}) as Record<string, unknown>));
+    });
+  }
+
+  const api: BroadcastSignaling = {
+    on(event, handler) {
+      handlers.set(event, handler);
+      return api;
+    },
+    subscribe(onReady) {
+      if (!subscribed) {
+        subscribed = true;
+        channel.subscribe((status) => {
+          if (status === "SUBSCRIBED") onReady?.();
+        });
+      }
+      return api;
+    },
+    send(event, payload = {}) {
+      void channel.send({ type: "broadcast", event, payload });
+    },
+    async destroy() {
+      await supabase.removeChannel(channel);
+    },
+  };
+
+  return api;
+}
+
 export async function sendSignal(input: {
   roomId: string;
   senderUserId: string;

@@ -11,10 +11,9 @@ import {
   stopMediaStream,
 } from "@/lib/webrtc/peer";
 import {
-  sendSignal,
-  subscribeSignals,
-  unsubscribeSignals,
+  createBroadcastSignaling,
   upsertPresence,
+  type BroadcastSignaling,
 } from "@/lib/webrtc/signaling";
 
 type LogoMarkProps = {
@@ -977,23 +976,22 @@ function ArenaView({
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const signalsRef = useRef<{
-    supabase: ReturnType<typeof createSupabaseClient>;
-    channel: ReturnType<typeof subscribeSignals>["channel"];
-  } | null>(null);
-  const broadcastRef = useRef<BroadcastChannel | null>(null);
+  const signalsRef = useRef<BroadcastSignaling | null>(null);
+  /** Stable ref so ICE/offer closures always see the latest remote peer ID. */
+  const remoteUserIdRef = useRef<string | null>(null);
 
   function goToNextStranger() {
     void shutdownWebRtc();
     setMessage("");
     setLog([...DEFAULT_ARENA_LOG]);
+    remoteUserIdRef.current = null;
     onNextStranger(roomId);
   }
 
   async function startCameraAndSync() {
     if (cameraReady) return;
     if (!roomId) {
-      setWebrtcStatus("Room not ready");
+      setWebrtcStatus("No room yet — find a stranger first");
       return;
     }
     if (!localVideoRef.current || !remoteVideoRef.current) {
@@ -1009,220 +1007,135 @@ function ArenaView({
           ? data.user.id
           : `guest_${typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now()}`;
       setMyUserId(userId);
-      const isGuest = !data.user;
-      setGuestMode(isGuest);
+      setGuestMode(!data.user);
 
       const peer = createDebatePeerConnection();
       peerRef.current = peer;
       localStreamRef.current = await attachLocalMedia(peer, localVideoRef.current);
+
       peer.ontrack = (event) => {
         const incoming = event.streams[0];
         if (!incoming || !remoteVideoRef.current) return;
-
-        // Safety guard: never render our own local stream in Stranger tile.
-        if (localStreamRef.current && incoming.id === localStreamRef.current.id) {
-          setWebrtcStatus("Ignoring self-stream in remote tile");
-          return;
-        }
-
+        if (localStreamRef.current && incoming.id === localStreamRef.current.id) return;
         remoteVideoRef.current.srcObject = incoming;
+        setWebrtcStatus("Connected");
       };
+
       setCameraReady(true);
-      setWebrtcStatus("Camera on");
+      setWebrtcStatus("Connecting…");
 
-      if (!isGuest) {
-        await upsertPresence({
-          roomId,
-          userId,
-          role: "affirmative",
-          isOnline: true,
-        });
-      }
+      // --- Broadcast-based signaling (no replication needed) ---
+      let offerSent = false;
 
-      peer.onicecandidate = async (event) => {
-        if (!event.candidate) return;
-        try {
-          if (isGuest && broadcastRef.current) {
-            broadcastRef.current.postMessage({
-              roomId,
-              senderUserId: userId,
-              targetUserId: remoteUserId,
-              signal_type: "ice_candidate",
-              payload: event.candidate.toJSON(),
-            });
-          } else {
-            await sendSignal({
-              roomId,
-              senderUserId: userId,
-              targetUserId: remoteUserId,
-              signalType: "ice_candidate",
-              payload: event.candidate.toJSON() as Record<string, unknown>,
-            });
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          setWebrtcStatus(`ICE sync error: ${msg}`);
-        }
+      const bc = createBroadcastSignaling(roomId);
+
+      const sendOffer = async (peerId: string) => {
+        if (offerSent) return;
+        offerSent = true;
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        bc.send("offer", { sdp: offer, target: peerId, sender: userId });
+        setWebrtcStatus("Calling peer…");
       };
-      const handleSignal = async (signal: {
-        sender_user_id: string;
-        target_user_id?: string | null;
-        signal_type: "offer" | "answer" | "ice_candidate" | "bye";
-        payload: Record<string, unknown>;
-      }) => {
-        try {
-          if (signal.sender_user_id === userId) return;
-          if (signal.target_user_id && signal.target_user_id !== userId) return;
 
-          if (signal.signal_type === "offer") {
-            setRemoteUserId(signal.sender_user_id);
-            await peer.setRemoteDescription(
-              new RTCSessionDescription(signal.payload as unknown as RTCSessionDescriptionInit)
-            );
-            const answer = await peer.createAnswer();
-            await peer.setLocalDescription(answer);
-            if (isGuest && broadcastRef.current) {
-              broadcastRef.current.postMessage({
-                roomId,
-                senderUserId: userId,
-                targetUserId: signal.sender_user_id,
-                signal_type: "answer",
-                payload: answer,
-              });
-            } else {
-              await sendSignal({
-                roomId,
-                senderUserId: userId,
-                targetUserId: signal.sender_user_id,
-                signalType: "answer",
-                payload: answer as unknown as Record<string, unknown>,
-              });
-            }
-            setWebrtcStatus("Connected");
-          } else if (signal.signal_type === "answer") {
-            await peer.setRemoteDescription(
-              new RTCSessionDescription(signal.payload as unknown as RTCSessionDescriptionInit)
-            );
-            setWebrtcStatus("Connected");
-          } else if (signal.signal_type === "ice_candidate") {
+      bc
+        .on("hello", (payload) => {
+          const peerId = payload.sender as string;
+          if (!peerId || peerId === userId) return;
+          remoteUserIdRef.current = peerId;
+          setRemoteUserId(peerId);
+          if (userId < peerId) {
+            // I'm the caller — send offer
+            void sendOffer(peerId);
+          } else {
+            // I'm not the caller — ack so caller knows I'm subscribed
+            bc.send("ack", { target: peerId, sender: userId });
+          }
+        })
+        .on("ack", (payload) => {
+          // Caller may have sent hello before non-caller subscribed; ack triggers offer
+          const peerId = payload.sender as string;
+          if (!peerId || peerId === userId) return;
+          const target = payload.target as string | undefined;
+          if (target && target !== userId) return;
+          remoteUserIdRef.current = peerId;
+          setRemoteUserId(peerId);
+          if (userId < peerId) void sendOffer(peerId);
+        })
+        .on("offer", async (payload) => {
+          const target = payload.target as string | undefined;
+          if (target && target !== userId) return;
+          const peerId = payload.sender as string;
+          remoteUserIdRef.current = peerId;
+          setRemoteUserId(peerId);
+          await peer.setRemoteDescription(
+            new RTCSessionDescription(payload.sdp as RTCSessionDescriptionInit)
+          );
+          const answer = await peer.createAnswer();
+          await peer.setLocalDescription(answer);
+          bc.send("answer", { sdp: answer, target: peerId, sender: userId });
+          setWebrtcStatus("Connected");
+        })
+        .on("answer", async (payload) => {
+          const target = payload.target as string | undefined;
+          if (target && target !== userId) return;
+          await peer.setRemoteDescription(
+            new RTCSessionDescription(payload.sdp as RTCSessionDescriptionInit)
+          );
+          setWebrtcStatus("Connected");
+        })
+        .on("ice", async (payload) => {
+          const target = payload.target as string | undefined;
+          if (target && target !== userId) return;
+          try {
             await peer.addIceCandidate(
-              new RTCIceCandidate(signal.payload as unknown as RTCIceCandidateInit)
+              new RTCIceCandidate(payload.candidate as RTCIceCandidateInit)
             );
-          } else if (signal.signal_type === "bye") {
-            setWebrtcStatus("Peer disconnected");
-          } else {
-            setWebrtcStatus("Unknown signal received");
+          } catch {
+            // ignore stale candidates
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          setWebrtcStatus(`Signal error: ${msg}`);
-        }
-      };
-
-      if (isGuest) {
-        const bc = new BroadcastChannel(`debate-webrtc-${roomId}`);
-        broadcastRef.current = bc;
-        bc.onmessage = (event: MessageEvent) => {
-          const msg = event.data as {
-            roomId: string;
-            senderUserId: string;
-            targetUserId?: string | null;
-            signal_type: "offer" | "answer" | "ice_candidate" | "bye" | "hello";
-            payload?: Record<string, unknown>;
-          };
-          if (!msg || msg.roomId !== roomId || msg.senderUserId === userId) return;
-          if (msg.signal_type === "hello") {
-            setRemoteUserId(msg.senderUserId);
-            if (userId < msg.senderUserId) {
-              void (async () => {
-                const offer = await peer.createOffer();
-                await peer.setLocalDescription(offer);
-                bc.postMessage({
-                  roomId,
-                  senderUserId: userId,
-                  targetUserId: msg.senderUserId,
-                  signal_type: "offer",
-                  payload: offer,
-                });
-                setWebrtcStatus("Calling peer...");
-              })();
-            }
-            return;
-          }
-          if (!msg.payload) return;
-          void handleSignal({
-            sender_user_id: msg.senderUserId,
-            target_user_id: msg.targetUserId ?? null,
-            signal_type: msg.signal_type,
-            payload: msg.payload,
-          });
-        };
-        bc.postMessage({ roomId, senderUserId: userId, signal_type: "hello" });
-        setWebrtcStatus("Guest mode: waiting for peer...");
-      } else {
-        signalsRef.current = subscribeSignals(roomId, (signal) => {
-          void handleSignal(signal);
+        })
+        .on("bye", (payload) => {
+          const target = payload.target as string | undefined;
+          if (target && target !== userId) return;
+          setWebrtcStatus("Peer disconnected");
+        })
+        .subscribe(() => {
+          // Announce presence; whoever subscribes second triggers the handshake
+          bc.send("hello", { sender: userId });
         });
 
-        const { data: others } = await supabase
-          .from("room_presence")
-          .select("user_id")
-          .eq("room_id", roomId)
-          .eq("is_online", true)
-          .neq("user_id", userId)
-          .order("joined_at", { ascending: true })
-          .limit(1);
+      // ICE candidates via broadcast (fast, no DB round-trip)
+      peer.onicecandidate = (event) => {
+        if (!event.candidate) return;
+        bc.send("ice", {
+          candidate: event.candidate.toJSON(),
+          target: remoteUserIdRef.current,
+          sender: userId,
+        });
+      };
 
-        const otherUserId = others?.[0]?.user_id as string | undefined;
-        if (otherUserId) {
-          setRemoteUserId(otherUserId);
-          const iAmCaller = userId < otherUserId;
-          if (iAmCaller) {
-            const offer = await peer.createOffer();
-            await peer.setLocalDescription(offer);
-            await sendSignal({
-              roomId,
-              senderUserId: userId,
-              targetUserId: otherUserId,
-              signalType: "offer",
-              payload: offer as unknown as Record<string, unknown>,
-            });
-            setWebrtcStatus("Calling peer...");
-          } else {
-            setWebrtcStatus("Waiting for offer...");
-          }
-        } else {
-          setWebrtcStatus("Waiting for peer...");
-        }
+      signalsRef.current = bc;
+
+      // Track presence so room can show who's online
+      if (data.user) {
+        void upsertPresence({ roomId, userId, role: "affirmative", isOnline: true });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setWebrtcStatus(`Failed to start camera/sync: ${msg}`);
+      setWebrtcStatus(`Failed to start camera: ${msg}`);
     }
   }
 
   async function shutdownWebRtc() {
     if (signalsRef.current) {
-      await unsubscribeSignals(signalsRef.current.supabase, signalsRef.current.channel);
+      await signalsRef.current.destroy();
       signalsRef.current = null;
     }
-    if (broadcastRef.current) {
-      broadcastRef.current.close();
-      broadcastRef.current = null;
-    }
-    if (myUserId && roomId) {
-      if (!guestMode) {
-        try {
-          await upsertPresence({
-            roomId,
-            userId: myUserId,
-            role: "affirmative",
-            isOnline: false,
-          });
-        } catch {
-          // ignore
-        }
-      }
+    if (myUserId && roomId && !guestMode) {
+      try {
+        await upsertPresence({ roomId, userId: myUserId, role: "affirmative", isOnline: false });
+      } catch { /* ignore */ }
     }
     peerRef.current?.close();
     peerRef.current = null;
@@ -1230,6 +1143,7 @@ function ArenaView({
     localStreamRef.current = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    remoteUserIdRef.current = null;
     setCameraReady(false);
     setWebrtcStatus("Camera off");
     setRemoteUserId(null);
@@ -1261,7 +1175,7 @@ function ArenaView({
   useEffect(() => {
     return () => {
       if (signalsRef.current) {
-        void unsubscribeSignals(signalsRef.current.supabase, signalsRef.current.channel);
+        void signalsRef.current.destroy();
         signalsRef.current = null;
       }
       peerRef.current?.close();
@@ -1398,6 +1312,13 @@ function ArenaView({
           <div className={`${videoShell} relative border-black/10 bg-zinc-900`}>
             {searching ? (
               <SearchingOverlay onStop={onStop} />
+            ) : !roomId ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-600">
+                  No stranger yet
+                </p>
+                <p className="text-[10px] text-zinc-700">Click Find Stranger to begin</p>
+              </div>
             ) : (
               <video
                 ref={remoteVideoRef}
@@ -1450,7 +1371,9 @@ function ArenaView({
           <div className="flex shrink-0 flex-col gap-1 border-b-2 border-zinc-400 bg-gradient-to-b from-zinc-200 via-zinc-100 to-zinc-200 px-2 py-1.5 min-[420px]:flex-row min-[420px]:items-center min-[420px]:justify-between min-[420px]:gap-2 min-[420px]:px-3 sm:py-2 md:px-4">
             <span className="text-[11px] font-semibold tracking-wide text-zinc-800 min-[480px]:text-xs">
               {searching ? (
-                <span className="text-zinc-500">Waiting for a stranger…</span>
+                <span className="text-zinc-500">Searching for a stranger…</span>
+              ) : !roomId ? (
+                <span className="text-zinc-500">Press Find Stranger to start</span>
               ) : (
                 <>
                   Session chat
@@ -1458,7 +1381,7 @@ function ArenaView({
                 </>
               )}
             </span>
-            {!searching && (
+            {!searching && !!roomId && (
               <div className="flex items-center gap-3 self-start min-[420px]:self-auto">
                 <button
                   type="button"
@@ -1491,46 +1414,59 @@ function ArenaView({
           </div>
 
           <form
-            onSubmit={searching ? (e) => e.preventDefault() : sendMessage}
+            onSubmit={searching || !roomId ? (e) => e.preventDefault() : sendMessage}
             className="arena-chat-composer shrink-0 border-t-2 border-zinc-400 bg-gradient-to-b from-zinc-200 to-zinc-300/95 p-2.5 min-[480px]:p-3 sm:p-4 md:p-5"
           >
             <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-2 min-[520px]:max-w-none min-[520px]:flex-row min-[520px]:items-stretch min-[520px]:gap-3 lg:max-w-none">
-              <textarea
-                value={message}
-                onChange={(event) => setMessage(event.target.value)}
-                placeholder={searching ? "Waiting for a stranger..." : "Type your message..."}
-                disabled={searching}
-                rows={1}
-                className="min-h-[3rem] min-w-0 flex-1 resize-none border-2 border-t-zinc-500 border-l-zinc-500 border-r-white border-b-white bg-white px-3 py-2.5 font-mono text-sm leading-snug text-zinc-900 outline-none focus:border-t-zinc-600 focus:border-l-zinc-600 disabled:bg-zinc-100 disabled:text-zinc-400 min-[480px]:min-h-[3.5rem] min-[480px]:px-3.5 min-[480px]:py-3"
-              />
-              <div className="flex w-full gap-2 min-[520px]:w-auto min-[520px]:shrink-0">
-                {searching ? (
-                  <button
-                    type="button"
-                    onClick={onStop}
-                    className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-red-700 hover:bg-red-50 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-8"
-                  >
-                    Stop
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      type="submit"
-                      disabled={sending}
-                      className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-zinc-900 hover:bg-zinc-100 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white disabled:opacity-50 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
-                    >
-                      {sending ? "..." : "Send"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={goToNextStranger}
-                      className="h-11 min-w-0 flex-1 border-2 border-t-orange-200 border-l-orange-200 border-r-orange-900 border-b-orange-900 bg-orange-600 px-4 font-mono text-sm font-bold text-white hover:bg-orange-500 active:border-t-orange-900 active:border-l-orange-900 active:border-r-orange-200 active:border-b-orange-200 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
-                    >
-                      Next
-                    </button>
-                  </>
-                )}
-              </div>
+              {!searching && !roomId ? (
+                /* Idle state — full-width Find Stranger button */
+                <button
+                  type="button"
+                  onClick={goToNextStranger}
+                  className="h-12 w-full border-2 border-t-orange-200 border-l-orange-200 border-r-orange-900 border-b-orange-900 bg-orange-600 font-mono text-sm font-bold uppercase tracking-widest text-white hover:bg-orange-500 active:border-t-orange-900 active:border-l-orange-900 active:border-r-orange-200 active:border-b-orange-200"
+                >
+                  Find Stranger
+                </button>
+              ) : (
+                <>
+                  <textarea
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    placeholder={searching ? "Looking for a stranger…" : "Type your message..."}
+                    disabled={searching}
+                    rows={1}
+                    className="min-h-[3rem] min-w-0 flex-1 resize-none border-2 border-t-zinc-500 border-l-zinc-500 border-r-white border-b-white bg-white px-3 py-2.5 font-mono text-sm leading-snug text-zinc-900 outline-none focus:border-t-zinc-600 focus:border-l-zinc-600 disabled:bg-zinc-100 disabled:text-zinc-400 min-[480px]:min-h-[3.5rem] min-[480px]:px-3.5 min-[480px]:py-3"
+                  />
+                  <div className="flex w-full gap-2 min-[520px]:w-auto min-[520px]:shrink-0">
+                    {searching ? (
+                      <button
+                        type="button"
+                        onClick={onStop}
+                        className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-red-700 hover:bg-red-50 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-8"
+                      >
+                        Stop
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="submit"
+                          disabled={sending}
+                          className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-zinc-900 hover:bg-zinc-100 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white disabled:opacity-50 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
+                        >
+                          {sending ? "..." : "Send"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={goToNextStranger}
+                          className="h-11 min-w-0 flex-1 border-2 border-t-orange-200 border-l-orange-200 border-r-orange-900 border-b-orange-900 bg-orange-600 px-4 font-mono text-sm font-bold text-white hover:bg-orange-500 active:border-t-orange-900 active:border-l-orange-900 active:border-r-orange-200 active:border-b-orange-200 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
+                        >
+                          Next
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </form>
         </div>
@@ -1654,15 +1590,14 @@ export default function DebatePlatformPreview() {
         return;
       }
       if (room?.id) {
-        // Joining a live room directly
         setActiveRoomId(room.id);
         setActiveTopic(room.topic);
-        setIsSearching(false);
       } else {
         setActiveRoomId("");
         setActiveTopic("");
-        setIsSearching(true);
       }
+      // Always enter arena idle — user clicks "Find Stranger" to begin matching
+      setIsSearching(false);
       setTransitioning(true);
       window.setTimeout(() => {
         setView("arena");
