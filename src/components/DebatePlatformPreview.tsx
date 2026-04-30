@@ -3,7 +3,6 @@
 import Image from "next/image";
 import Link from "next/link";
 import React, { useEffect, useRef, useState } from "react";
-import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { LiveCheckResponse, FinalScoreResponse, RefereeEvent } from "@/lib/referee/types";
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
 import {
@@ -152,89 +151,6 @@ function ArrowGlyph({ tone = "light" }: { tone?: "light" | "dark" }) {
   );
 }
 
-type BrandVariant = "dark" | "hero" | "nav" | "light" | "cancel" | "terminate" | "send" | "ghost";
-
-function BrandButton({
-  children,
-  onClick,
-  type = "button",
-  disabled = false,
-  variant = "dark",
-  className = "",
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  type?: "button" | "submit";
-  disabled?: boolean;
-  variant?: BrandVariant;
-  className?: string;
-}) {
-  const base =
-    "group inline-flex items-center justify-center whitespace-nowrap font-bold transition-all duration-300 ease-out disabled:pointer-events-none disabled:opacity-60";
-
-  const variants: Record<BrandVariant, string> = {
-    dark:
-      "relative overflow-hidden rounded-[20px] border border-black/90 bg-[linear-gradient(135deg,#191919,#060606)] text-white shadow-[0_18px_45px_-18px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.12)] hover:-translate-y-0.5 hover:shadow-[0_24px_52px_-20px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.16)] active:translate-y-0",
-    hero:
-      "relative overflow-hidden rounded-[20px] border border-black/90 bg-[linear-gradient(135deg,#191919,#060606)] text-white shadow-[0_18px_45px_-18px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.12)] hover:-translate-y-0.5 hover:shadow-[0_24px_52px_-20px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.16)] active:translate-y-0",
-    nav:
-      "rounded-full border border-black/90 bg-[#111] text-white shadow-[0_8px_20px_-14px_rgba(0,0,0,0.9),inset_0_1px_0_rgba(255,255,255,0.08)] hover:bg-[#ff4d00] hover:border-[#ff4d00] active:scale-[0.98]",
-    light:
-      "rounded-[18px] border border-black/10 bg-white/95 text-[#1a1a1a] shadow-[0_8px_22px_rgba(0,0,0,0.06),inset_0_1px_0_rgba(255,255,255,0.7)] hover:-translate-y-px hover:border-black/20 hover:bg-white active:translate-y-0",
-    cancel:
-      "rounded-none border-b border-transparent bg-transparent text-zinc-300 hover:border-red-400 hover:text-red-500",
-    terminate:
-      "rounded-[16px] border border-zinc-200 bg-white text-zinc-400 shadow-[0_8px_22px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.85)] hover:-translate-y-px hover:border-red-200 hover:bg-red-50 hover:text-red-600 active:translate-y-0",
-    send:
-      "rounded-[14px] border border-zinc-300 bg-[linear-gradient(180deg,#f8f8f8,#e6e6e8)] text-zinc-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_6px_14px_-10px_rgba(0,0,0,0.65)] hover:-translate-y-px hover:border-zinc-400 hover:bg-zinc-200 active:translate-y-0",
-    ghost:
-      "rounded-full border border-zinc-200/80 bg-white/50 text-zinc-600 shadow-none backdrop-blur-sm hover:bg-white hover:border-zinc-300 active:scale-[0.98]",
-  };
-
-  const content: Record<BrandVariant, React.ReactNode> = {
-    hero: (
-      <>
-        <span className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/35 to-transparent" />
-        <ArenaGlyph />
-        <span>{children}</span>
-        <ArrowGlyph />
-      </>
-    ),
-    nav: (
-      <>
-        <BoltGlyph />
-        <span>{children}</span>
-      </>
-    ),
-    cancel: <span>{children}</span>,
-    terminate: (
-      <>
-        <FlagGlyph />
-        <span>{children}</span>
-      </>
-    ),
-    send: (
-      <>
-        <span>{children}</span>
-        <ArrowGlyph tone="dark" />
-      </>
-    ),
-    light: <span>{children}</span>,
-    dark: <span>{children}</span>,
-    ghost: <span>{children}</span>,
-  };
-
-  return (
-    <button
-      type={type}
-      onClick={onClick}
-      disabled={disabled}
-      className={`${base} ${variants[variant]} ${className}`}
-    >
-      {content[variant]}
-    </button>
-  );
-}
 
 type LiveRoomCard = {
   id: string;
@@ -990,47 +906,27 @@ function OnboardingTagsView({
   );
 }
 
-function MatchmakingView({
-  onCancel,
-  found,
-  statusText,
-}: {
-  onCancel: () => void;
-  found: boolean;
-  statusText: string;
-}) {
+function SearchingOverlay({ onStop }: { onStop: () => void }) {
+  const [dots, setDots] = useState(".");
+  useEffect(() => {
+    const id = setInterval(
+      () => setDots((d) => (d.length >= 3 ? "." : d + ".")),
+      500
+    );
+    return () => clearInterval(id);
+  }, []);
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-[#f8f7f4] px-6 py-16">
-      <div
-        className={`flex w-full max-w-md flex-col items-center text-center transition-all duration-700 ease-out ${found ? "scale-[0.99] opacity-85" : "scale-100 opacity-100"}`}
+    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-zinc-900/90 backdrop-blur-sm">
+      <p className="text-sm font-semibold tracking-widest text-zinc-400 uppercase">
+        Looking for a stranger{dots}
+      </p>
+      <button
+        type="button"
+        onClick={onStop}
+        className="border-2 border-t-zinc-500 border-l-zinc-500 border-r-zinc-200 border-b-zinc-200 bg-zinc-800 px-8 py-2 font-mono text-sm font-bold uppercase tracking-widest text-zinc-200 hover:bg-zinc-700 active:border-t-zinc-200 active:border-l-zinc-200 active:border-r-zinc-500 active:border-b-zinc-500"
       >
-        <div className="relative mb-10 flex h-44 w-44 items-center justify-center">
-          <div
-            className="absolute inset-[5%] rounded-[35%] bg-[radial-gradient(circle_at_50%_45%,rgba(255,77,0,0.38),transparent_62%)] blur-2xl animate-matchmaking-aura"
-            aria-hidden
-          />
-          <LogoMark pulsing size="large" />
-        </div>
-
-        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-zinc-400">
-          {found ? "Ready" : "Matching"}
-        </p>
-        <h2 className="mt-3 text-2xl font-bold tracking-tight text-[#121212] sm:text-[1.65rem]">
-          {found ? "Opponent matched" : "Finding your rival"}
-        </h2>
-
-        <p className="mt-3 max-w-[18rem] text-sm leading-relaxed text-zinc-500">
-          {statusText}
-        </p>
-
-        <BrandButton
-          onClick={onCancel}
-          variant="ghost"
-          className="mt-14 min-h-[42px] rounded-full px-6 text-[11px] font-semibold uppercase tracking-[0.2em] text-zinc-500 hover:text-zinc-800"
-        >
-          Cancel
-        </BrandButton>
-      </div>
+        Stop
+      </button>
     </div>
   );
 }
@@ -1045,18 +941,31 @@ const DEFAULT_ARENA_LOG: ArenaLogEntry[] = [];
 function ArenaView({
   onLeave,
   onNextStranger,
+  onStop,
   roomId,
   topic,
+  searching,
 }: {
   onLeave: () => void;
-  /** Omegle-style: disconnect and search for a new opponent with the same topic. */
   onNextStranger: (roomId: string) => void;
+  onStop: () => void;
   roomId: string;
   topic: string;
+  searching: boolean;
 }) {
   const [message, setMessage] = useState("");
   const [log, setLog] = useState<ArenaLogEntry[]>(() => [...DEFAULT_ARENA_LOG]);
   const [sending, setSending] = useState(false);
+  const prevSearchingRef = useRef(searching);
+  useEffect(() => {
+    if (prevSearchingRef.current && !searching && topic) {
+      setLog((l) => [
+        ...l,
+        { type: "system", text: `You're now debating with a stranger. Topic: ${topic}` },
+      ]);
+    }
+    prevSearchingRef.current = searching;
+  }, [searching, topic]);
   const [scoring, setScoring] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [webrtcStatus, setWebrtcStatus] = useState("Camera off");
@@ -1484,15 +1393,19 @@ function ArenaView({
   return (
     <div className="box-border flex h-dvh max-h-dvh flex-col overflow-hidden bg-[#f2f2f0] pt-[calc(4.5rem+env(safe-area-inset-top,0px))] text-[#121212] supports-[height:100dvh]:h-[100dvh] supports-[height:100dvh]:max-h-[100dvh]">
       <div className="mx-auto flex min-h-0 w-full max-w-[min(100%,1400px)] flex-1 flex-col gap-3 overflow-hidden px-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-1 sm:gap-4 sm:px-4 sm:pb-4 sm:pt-2 md:gap-5 md:px-6 lg:px-8 xl:max-w-[min(100%,92rem)] xl:px-10 2xl:px-12">
-        {/* Top row: Stranger | You — stack until ~520px, then two columns (height-capped so chat stays tall). */}
+        {/* Top row: Stranger | You */}
         <div className="grid min-h-0 shrink-0 grid-cols-1 gap-3 min-[520px]:grid-cols-2 min-[520px]:gap-4 min-[520px]:content-start lg:gap-5">
-          <div className={`${videoShell} border-black/10 bg-zinc-900`}>
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
-              className="absolute inset-0 h-full w-full object-cover"
-            />
+          <div className={`${videoShell} relative border-black/10 bg-zinc-900`}>
+            {searching ? (
+              <SearchingOverlay onStop={onStop} />
+            ) : (
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className="absolute inset-0 h-full w-full object-cover"
+              />
+            )}
             <div className={`pointer-events-none absolute bottom-2 left-0 right-0 text-center min-[480px]:bottom-4 ${metaLabel} text-white/50`}>
               Stranger
             </div>
@@ -1536,29 +1449,37 @@ function ArenaView({
         <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden rounded-md border-2 border-zinc-400 bg-zinc-300/50 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] min-[480px]:rounded-lg">
           <div className="flex shrink-0 flex-col gap-1 border-b-2 border-zinc-400 bg-gradient-to-b from-zinc-200 via-zinc-100 to-zinc-200 px-2 py-1.5 min-[420px]:flex-row min-[420px]:items-center min-[420px]:justify-between min-[420px]:gap-2 min-[420px]:px-3 sm:py-2 md:px-4">
             <span className="text-[11px] font-semibold tracking-wide text-zinc-800 min-[480px]:text-xs">
-              Session chat
-              <span className="ml-2 font-normal text-zinc-500">· AI moderator</span>
+              {searching ? (
+                <span className="text-zinc-500">Waiting for a stranger…</span>
+              ) : (
+                <>
+                  Session chat
+                  <span className="ml-2 font-normal text-zinc-500">· AI moderator</span>
+                </>
+              )}
             </span>
-            <div className="flex items-center gap-3 self-start min-[420px]:self-auto">
-              <button
-                type="button"
-                onClick={endDebate}
-                disabled={scoring}
-                className="border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-orange-700 underline decoration-orange-400 underline-offset-2 hover:border-orange-400 hover:bg-orange-100/80 disabled:opacity-50"
-              >
-                {scoring ? "Scoring..." : "End Debate"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void shutdownWebRtc();
-                  onLeave();
-                }}
-                className="border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-600 underline decoration-zinc-400 underline-offset-2 hover:border-zinc-400 hover:bg-zinc-200/80 hover:text-red-700"
-              >
-                Disconnect
-              </button>
-            </div>
+            {!searching && (
+              <div className="flex items-center gap-3 self-start min-[420px]:self-auto">
+                <button
+                  type="button"
+                  onClick={endDebate}
+                  disabled={scoring}
+                  className="border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-orange-700 underline decoration-orange-400 underline-offset-2 hover:border-orange-400 hover:bg-orange-100/80 disabled:opacity-50"
+                >
+                  {scoring ? "Scoring..." : "End Debate"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void shutdownWebRtc();
+                    onLeave();
+                  }}
+                  className="border border-transparent px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-widest text-zinc-600 underline decoration-zinc-400 underline-offset-2 hover:border-zinc-400 hover:bg-zinc-200/80 hover:text-red-700"
+                >
+                  Disconnect
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="custom-scroll omegle-log arena-chat-log min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-[#f0ece2] p-3 text-[13px] shadow-[inset_0_2px_8px_rgba(0,0,0,0.06)] min-[480px]:p-4 min-[480px]:text-[13px] md:p-5 lg:p-6">
@@ -1570,32 +1491,45 @@ function ArenaView({
           </div>
 
           <form
-            onSubmit={sendMessage}
+            onSubmit={searching ? (e) => e.preventDefault() : sendMessage}
             className="arena-chat-composer shrink-0 border-t-2 border-zinc-400 bg-gradient-to-b from-zinc-200 to-zinc-300/95 p-2.5 min-[480px]:p-3 sm:p-4 md:p-5"
           >
             <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-2 min-[520px]:max-w-none min-[520px]:flex-row min-[520px]:items-stretch min-[520px]:gap-3 lg:max-w-none">
               <textarea
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
-                placeholder="Type your message..."
+                placeholder={searching ? "Waiting for a stranger..." : "Type your message..."}
+                disabled={searching}
                 rows={1}
-                className="min-h-[3rem] min-w-0 flex-1 resize-none border-2 border-t-zinc-500 border-l-zinc-500 border-r-white border-b-white bg-white px-3 py-2.5 font-mono text-sm leading-snug text-zinc-900 outline-none focus:border-t-zinc-600 focus:border-l-zinc-600 min-[480px]:min-h-[3.5rem] min-[480px]:px-3.5 min-[480px]:py-3"
+                className="min-h-[3rem] min-w-0 flex-1 resize-none border-2 border-t-zinc-500 border-l-zinc-500 border-r-white border-b-white bg-white px-3 py-2.5 font-mono text-sm leading-snug text-zinc-900 outline-none focus:border-t-zinc-600 focus:border-l-zinc-600 disabled:bg-zinc-100 disabled:text-zinc-400 min-[480px]:min-h-[3.5rem] min-[480px]:px-3.5 min-[480px]:py-3"
               />
               <div className="flex w-full gap-2 min-[520px]:w-auto min-[520px]:shrink-0">
-                <button
-                  type="submit"
-                  disabled={sending}
-                  className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-zinc-900 hover:bg-zinc-100 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white disabled:opacity-50 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
-                >
-                  {sending ? "..." : "Send"}
-                </button>
-                <button
-                  type="button"
-                  onClick={goToNextStranger}
-                  className="h-11 min-w-0 flex-1 border-2 border-t-orange-200 border-l-orange-200 border-r-orange-900 border-b-orange-900 bg-orange-600 px-4 font-mono text-sm font-bold text-white hover:bg-orange-500 active:border-t-orange-900 active:border-l-orange-900 active:border-r-orange-200 active:border-b-orange-200 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
-                >
-                  Next
-                </button>
+                {searching ? (
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-red-700 hover:bg-red-50 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-8"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="submit"
+                      disabled={sending}
+                      className="h-11 min-w-0 flex-1 border-2 border-t-white border-l-white border-r-zinc-500 border-b-zinc-600 bg-zinc-200 font-mono text-sm font-bold text-zinc-900 hover:bg-zinc-100 active:border-t-zinc-500 active:border-l-zinc-500 active:border-r-white active:border-b-white disabled:opacity-50 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
+                    >
+                      {sending ? "..." : "Send"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={goToNextStranger}
+                      className="h-11 min-w-0 flex-1 border-2 border-t-orange-200 border-l-orange-200 border-r-orange-900 border-b-orange-900 bg-orange-600 px-4 font-mono text-sm font-bold text-white hover:bg-orange-500 active:border-t-orange-900 active:border-l-orange-900 active:border-r-orange-200 active:border-b-orange-200 min-[520px]:h-auto min-[520px]:min-h-[3.5rem] min-[520px]:flex-none min-[520px]:px-6"
+                    >
+                      Next
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </form>
@@ -1605,7 +1539,7 @@ function ArenaView({
   );
 }
 
-type View = "landing" | "auth" | "onboarding" | "matchmaking" | "arena";
+type View = "landing" | "auth" | "onboarding" | "arena";
 
 export default function DebatePlatformPreview() {
   const [view, setView] = useState<View>("landing");
@@ -1614,15 +1548,10 @@ export default function DebatePlatformPreview() {
   const [authPrompt, setAuthPrompt] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [, setOnboardingComplete] = useState(false);
-  const [pendingTopic, setPendingTopic] = useState("");
   const [activeRoomId, setActiveRoomId] = useState("");
   const [activeTopic, setActiveTopic] = useState("");
-  const [matchmakingFound, setMatchmakingFound] = useState(false);
-  const [matchmakingStatus, setMatchmakingStatus] = useState("Waiting for a stranger...");
-
-  const matchmakingChannelRef = useRef<RealtimeChannel | null>(null);
-  const createdWaitingRoomRef = useRef<string | null>(null);
-  const guestMatchTimersRef = useRef<number[]>([]);
+  /** true while the arena is polling for a match (Omegle "looking for stranger" state) */
+  const [isSearching, setIsSearching] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -1700,42 +1629,20 @@ export default function DebatePlatformPreview() {
     })();
   };
 
-  const cleanupMatchmaking = async () => {
-    const roomId = createdWaitingRoomRef.current;
-    createdWaitingRoomRef.current = null;
-
-    if (matchmakingChannelRef.current) {
-      const supabase = createSupabaseClient();
-      await supabase.removeChannel(matchmakingChannelRef.current);
-      matchmakingChannelRef.current = null;
-    }
-
-    if (roomId) {
-      try {
-        const supabase = createSupabaseClient();
-        await supabase
-          .from("debate_rooms")
-          .update({ status: "cancelled", ended_at: new Date().toISOString() })
-          .eq("id", roomId)
-          .eq("status", "waiting");
-      } catch {
-        // ignore cleanup errors
-      }
-    }
-  };
-
   const showLanding = () => {
     if (transitioning) return;
-    void cleanupMatchmaking();
+    void fetch("/api/matchmaking/leave", { method: "POST" }).catch(() => {});
     setTransitioning(true);
     window.setTimeout(() => {
       setView("landing");
+      setIsSearching(false);
       window.setTimeout(() => setTransitioning(false), 420);
     }, 520);
   };
 
-  const showMatchmaking = (room?: LiveRoomCard) => {
-    if (transitioning || view === "matchmaking" || view === "arena") return;
+  /** Enter arena immediately and start searching for a stranger. */
+  const enterArena = (room?: LiveRoomCard) => {
+    if (transitioning || view === "arena") return;
     void (async () => {
       const done = await checkOnboardingStatus();
       if (!userEmail) {
@@ -1746,173 +1653,119 @@ export default function DebatePlatformPreview() {
         setView("onboarding");
         return;
       }
-
-      setPendingTopic(room?.topic ?? "");
-      setMatchmakingFound(false);
-      setMatchmakingStatus("Waiting for a stranger...");
+      if (room?.id) {
+        // Joining a live room directly
+        setActiveRoomId(room.id);
+        setActiveTopic(room.topic);
+        setIsSearching(false);
+      } else {
+        setActiveRoomId("");
+        setActiveTopic("");
+        setIsSearching(true);
+      }
       setTransitioning(true);
       window.setTimeout(() => {
-        setView("matchmaking");
+        setView("arena");
         window.setTimeout(() => setTransitioning(false), 420);
       }, 520);
     })();
   };
 
-  /** From arena "Next" — same topic, new random match (Omegle-style). */
+  /** Stop searching and go back to landing. */
+  const stopSearching = () => {
+    void fetch("/api/matchmaking/leave", { method: "POST" }).catch(() => {});
+    showLanding();
+  };
+
+  /** "Next" from arena: mark room done, start searching again within the arena. */
   const startNextStrangerMatch = (endedRoomId: string) => {
-    if (transitioning || view !== "arena") return;
+    if (view !== "arena") return;
     void (async () => {
       try {
         const supabase = createSupabaseClient();
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
+        const { data: { user } } = await supabase.auth.getUser();
         if (user && endedRoomId) {
           await supabase
             .from("debate_rooms")
             .update({ status: "completed", ended_at: new Date().toISOString() })
             .eq("id", endedRoomId);
         }
-      } catch {
-        // best-effort; RLS or guest mode may skip
-      }
+      } catch { /* best-effort */ }
     })();
-    void cleanupMatchmaking();
-    setPendingTopic(activeTopic || pendingTopic || "");
-    setMatchmakingFound(false);
-    setMatchmakingStatus("Looking for someone new...");
-    setTransitioning(true);
-    window.setTimeout(() => {
-      setView("matchmaking");
-      window.setTimeout(() => setTransitioning(false), 420);
-    }, 520);
+    setActiveRoomId("");
+    setActiveTopic("");
+    setIsSearching(true);
   };
 
-  const showArena = (roomId: string, topic: string) => {
-    createdWaitingRoomRef.current = null;
-    setActiveRoomId(roomId);
-    setActiveTopic(topic);
-    setTransitioning(true);
-    window.setTimeout(() => {
-      setView("arena");
-      window.setTimeout(() => setTransitioning(false), 420);
-    }, 520);
-  };
-
+  // Omegle-style searching: runs while arena is open and isSearching === true
   useEffect(() => {
-    if (view !== "matchmaking") return;
+    if (view !== "arena" || !isSearching) return;
 
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
-    guestMatchTimersRef.current = [];
 
-    const runMatchmaking = async () => {
+    const run = async () => {
       try {
-        const supabase = createSupabaseClient();
-        const {
-          data: { user },
-          error: authError,
-        } = await supabase.auth.getUser();
-
-        if (authError || !user) {
-          setMatchmakingStatus("Please log in to start matchmaking.");
-          window.setTimeout(() => {
-            if (!cancelled) {
-              setAuthMode("login");
-              setAuthPrompt("Please log in to start matchmaking.");
-              setView("auth");
-              setTransitioning(false);
-            }
-          }, 450);
-          return;
-        }
-
-        setMatchmakingStatus("Joining matchmaking queue...");
-
         const joinRes = await fetch("/api/matchmaking/join", { method: "POST" });
         const joinData = await joinRes.json();
-
         if (cancelled) return;
 
-        if (joinData.error) {
-          setMatchmakingStatus(joinData.error);
-          return;
-        }
-
         if (joinData.matched && joinData.room_id) {
-          setMatchmakingFound(true);
-          setMatchmakingStatus("Match found. Entering arena...");
-          window.setTimeout(() => {
-            if (!cancelled) showArena(joinData.room_id, joinData.topic || "Open debate");
-          }, 700);
+          setIsSearching(false);
+          setActiveRoomId(joinData.room_id);
+          setActiveTopic(joinData.topic || "Open debate");
           return;
         }
 
-        setMatchmakingStatus(joinData.reason || "Waiting for opponent...");
+        if (joinData.error) return; // surfaced in service error message
 
-        // Poll the status endpoint (read-only, no side effects) until matched
-        const pollStatus = async () => {
+        const poll = async () => {
           if (cancelled) return;
-
           try {
             const statusRes = await fetch("/api/matchmaking/status");
-            const statusData = await statusRes.json();
-
+            const s = await statusRes.json();
             if (cancelled) return;
 
-            if (statusData.state === "matched" && statusData.room_id) {
-              setMatchmakingFound(true);
-              setMatchmakingStatus("Match found. Entering arena...");
-              window.setTimeout(() => {
-                if (!cancelled) showArena(statusData.room_id, statusData.topic || "Open debate");
-              }, 700);
+            if (s.state === "matched" && s.room_id) {
+              setIsSearching(false);
+              setActiveRoomId(s.room_id);
+              setActiveTopic(s.topic || "Open debate");
               return;
             }
 
-            if (statusData.state === "idle") {
-              // Fell out of queue without a match — re-join once
-              const rejoinRes = await fetch("/api/matchmaking/join", { method: "POST" });
-              const rejoinData = await rejoinRes.json();
-              if (rejoinData.matched && rejoinData.room_id) {
-                setMatchmakingFound(true);
-                setMatchmakingStatus("Match found. Entering arena...");
-                window.setTimeout(() => {
-                  if (!cancelled) showArena(rejoinData.room_id, rejoinData.topic || "Open debate");
-                }, 700);
+            if (s.state === "idle") {
+              // Re-join if fell out of queue
+              const rejoin = await fetch("/api/matchmaking/join", { method: "POST" });
+              const rj = await rejoin.json();
+              if (cancelled) return;
+              if (rj.matched && rj.room_id) {
+                setIsSearching(false);
+                setActiveRoomId(rj.room_id);
+                setActiveTopic(rj.topic || "Open debate");
                 return;
               }
             }
 
-            pollTimer = setTimeout(pollStatus, 2000);
+            pollTimer = setTimeout(poll, 1800);
           } catch {
-            if (!cancelled) {
-              pollTimer = setTimeout(pollStatus, 3000);
-            }
+            if (!cancelled) pollTimer = setTimeout(poll, 3000);
           }
         };
 
-        pollTimer = setTimeout(pollStatus, 1500);
+        pollTimer = setTimeout(poll, 1200);
       } catch {
-        setMatchmakingStatus("Matchmaking unavailable. Try again.");
+        // network error — retry
+        if (!cancelled) pollTimer = setTimeout(run, 3000);
       }
     };
 
-    void runMatchmaking();
+    void run();
     return () => {
       cancelled = true;
       if (pollTimer) clearTimeout(pollTimer);
-      guestMatchTimersRef.current.forEach((id) => window.clearTimeout(id));
-      guestMatchTimersRef.current = [];
-      void (async () => {
-        try {
-          await fetch("/api/matchmaking/leave", { method: "POST" });
-        } catch {
-          // ignore
-        }
-      })();
-      void cleanupMatchmaking();
+      void fetch("/api/matchmaking/leave", { method: "POST" }).catch(() => {});
     };
-  }, [view, pendingTopic]);
+  }, [view, isSearching]);
 
   if (view === "landing") {
     return (
@@ -1922,7 +1775,7 @@ export default function DebatePlatformPreview() {
         >
           <LandingHomeView
             onLogo={showLanding}
-            onGoLive={showMatchmaking}
+            onGoLive={enterArena}
             transitioning={transitioning}
             userEmail={userEmail}
             onRequestAuth={showAuth}
@@ -1956,32 +1809,18 @@ export default function DebatePlatformPreview() {
 
   return (
     <main className="min-h-screen overflow-hidden bg-[#f8f7f4] font-sans text-[#121212] antialiased">
-      <nav className="fixed left-0 right-0 top-0 z-50 border-b border-black/5 bg-[#f8f7f4]/95 backdrop-blur-[20px] will-change-transform">
-        <div className="mx-auto grid max-w-7xl grid-cols-[340px_1fr_220px] items-center px-6 py-4">
-          <LogoButton onClick={showLanding} spinning={transitioning} />
-          <div />
-          <div className="flex items-center justify-end gap-6">
-            {view === "matchmaking" ? (
-              <StartSessionButton onClick={showMatchmaking} transitioning={transitioning} />
-            ) : null}
-          </div>
-        </div>
-      </nav>
-
       <div
         className={`transition-all duration-500 ease-out ${transitioning ? "scale-[0.992] opacity-0 blur-[2px]" : "scale-100 opacity-100 blur-0"}`}
       >
-        {view === "arena" ? (
-          <ArenaView
-            key={activeRoomId || "arena"}
-            onLeave={showLanding}
-            onNextStranger={startNextStrangerMatch}
-            roomId={activeRoomId}
-            topic={activeTopic}
-          />
-        ) : (
-          <MatchmakingView onCancel={showLanding} found={matchmakingFound} statusText={matchmakingStatus} />
-        )}
+        <ArenaView
+          key={isSearching ? "searching" : activeRoomId || "arena"}
+          onLeave={showLanding}
+          onNextStranger={startNextStrangerMatch}
+          onStop={stopSearching}
+          roomId={activeRoomId}
+          topic={activeTopic}
+          searching={isSearching}
+        />
       </div>
     </main>
   );
