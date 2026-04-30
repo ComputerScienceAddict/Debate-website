@@ -39,15 +39,16 @@ export async function joinMatchmaking(userId: string): Promise<JoinMatchResult> 
     };
   }
 
-  // Clean up any stale "active" rooms for this user (older than 30 min)
-  // — these are leftover from sessions that weren't properly closed.
-  const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  const endedNow = new Date().toISOString();
+
+  // Close any in-progress Omegle room before re-joining the queue (Next / peer left).
+  // Client-side updates hit RLS; without this the next GET /matchmaking/status still
+  // returns "matched" and the UI never keeps searching.
   await admin
     .from("debate_rooms")
-    .update({ status: "completed", ended_at: new Date().toISOString() })
+    .update({ status: "completed", ended_at: endedNow })
     .or(`affirmative_user_id.eq.${userId},negative_user_id.eq.${userId}`)
-    .eq("status", "active")
-    .lt("created_at", thirtyMinAgo);
+    .eq("status", "active");
 
   // Try to claim the longest-waiting user (FIFO)
   const { data: candidates } = await admin

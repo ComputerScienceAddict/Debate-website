@@ -916,9 +916,14 @@ function SearchingOverlay({ onStop }: { onStop: () => void }) {
   }, []);
   return (
     <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-zinc-900/90 backdrop-blur-sm">
-      <p className="text-sm font-semibold tracking-widest text-zinc-400 uppercase">
-        Looking for a stranger{dots}
-      </p>
+      <div className="flex flex-col items-center gap-3 px-4 text-center">
+        <p className="text-sm font-semibold uppercase tracking-widest text-zinc-400">
+          Looking for a stranger{dots}
+        </p>
+        <p className="max-w-xs text-[11px] leading-relaxed text-zinc-500">
+          If someone skips or disconnects you, we&apos;ll keep looking automatically.
+        </p>
+      </div>
       <button
         type="button"
         onClick={onStop}
@@ -936,7 +941,10 @@ type ArenaLogEntry =
   | { type: "stranger" | "you" | "ai"; text: string };
 
 const DEFAULT_ARENA_LOG: ArenaLogEntry[] = [
-  { type: "system", text: "Looking for someone to debate with…" },
+  {
+    type: "system",
+    text: "Looking for someone to debate with… We'll keep searching until you're matched.",
+  },
 ];
 
 function ArenaView({
@@ -948,7 +956,7 @@ function ArenaView({
   searching,
 }: {
   onLeave: () => void;
-  onNextStranger: (roomId: string) => void;
+  onNextStranger: () => void;
   onStop: () => void;
   roomId: string;
   topic: string;
@@ -1000,9 +1008,8 @@ function ArenaView({
   function goToNextStranger() {
     void shutdownWebRtc();
     setMessage("");
-    setLog([{ type: "system", text: "Looking for a new stranger…" }]);
     remoteUserIdRef.current = null;
-    onNextStranger(roomId);
+    onNextStranger();
   }
 
   async function startCameraAndSync() {
@@ -1595,21 +1602,9 @@ export default function DebatePlatformPreview() {
     showLanding();
   };
 
-  /** "Next" from arena: mark room done, start searching again within the arena. */
-  const startNextStrangerMatch = (endedRoomId: string) => {
+  /** "Next" / stranger left: POST /matchmaking/join closes the active room server-side (RLS blocks client writes). */
+  const startNextStrangerMatch = () => {
     if (view !== "arena") return;
-    void (async () => {
-      try {
-        const supabase = createSupabaseClient();
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user && endedRoomId) {
-          await supabase
-            .from("debate_rooms")
-            .update({ status: "completed", ended_at: new Date().toISOString() })
-            .eq("id", endedRoomId);
-        }
-      } catch { /* best-effort */ }
-    })();
     setActiveRoomId("");
     setActiveTopic("");
     setIsSearching(true);
