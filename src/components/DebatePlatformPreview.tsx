@@ -1645,10 +1645,12 @@ export default function DebatePlatformPreview() {
     })();
   };
 
-  /** Stop searching and go back to landing. */
+  /** Stop pairing but stay in the arena (idle state + Find Stranger). */
   const stopSearching = () => {
     void fetch("/api/matchmaking/leave", { method: "POST" }).catch(() => {});
-    showLanding();
+    setIsSearching(false);
+    setActiveRoomId("");
+    setActiveTopic("");
   };
 
   /** "Next" / stranger left: POST /matchmaking/join closes the active room server-side (RLS blocks client writes). */
